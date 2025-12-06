@@ -41,6 +41,3 @@ The final objective is to build **"MathMinds AI,"** an intelligent analytical we
 - OCR tooling (Tesseract / ML-based OCR)  
 - LLM providers or local models (for natural language understanding and code generation)  
 - Vector embeddings + FAISS / Pinecone / Supabase (for retrieval)
-
-   git clone https://github.com/<your-username>/mathminds-ai.git
-   cd mathminds-ai
