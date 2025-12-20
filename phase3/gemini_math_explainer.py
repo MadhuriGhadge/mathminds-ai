@@ -2,10 +2,8 @@ import os
 from dotenv import load_dotenv
 from google import genai
 
-# Load environment variables
 load_dotenv()
 
-# Create Gemini client (reads GOOGLE_API_KEY automatically)
 client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def generate_text_with_gemini(prompt_text: str):
