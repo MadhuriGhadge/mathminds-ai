@@ -1,37 +1,29 @@
 import os
-import google.generateveai as genai 
+from dotenv import load_dotenv
+from google import genai
 
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+# Load environment variables
+load_dotenv()
 
-model = genai.GenerativeModel("gemini-1.5-flash")
+# Create Gemini client (reads GOOGLE_API_KEY automatically)
+client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
 
-def explain_math_problem(problem:str)->str:
+def generate_text_with_gemini(prompt_text: str):
     """
-    takes a math wod problem and returns a step-by-step
-    explaination without giving the final numerical solution. 
+    Generates text from the Gemini model based on a prompt.
     """
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt_text
+    )
+    return response.text
 
-    prompt = f"""
-    you are a helpful math tutor.
-
-    given the following math word problem:    
-    \"\"\"{problem}\"\"\"
-
-    explain step by step how to approch and solve the problem.
-    - break the solution into logical steps
-    - Explain the reasoning clearly 
-    - Do Not calculate or provide the final numerical answer 
-    - stop before the final computation
-    """
-
-    response = model.generate_content(prompt)
-    return response.text 
 
 if __name__ == "__main__":
-    math_problem = """
-A train travels 120 km at a constant speed. If the speed of the train
-was increased by 20 km/h, the journey would take 1 hour less.
-Find the original speed of the train.
-"""
-
-    print(explain_math_problem(math_problem))
+    prompt = """
+    A train travels 120 km at a constant speed. If the speed of the train
+    was increased by 20 km/h, the journey would take 1 hour less.
+    Find the original speed of the train.
+    """
+    print("Prompt:", prompt, "\n")
+    print(generate_text_with_gemini(prompt))
