@@ -1,0 +1,15 @@
+redis
+
+
+pymongo
+pymongo
+google-genai
+tenacity
+fastapi
+uvicorn
+celery
+python-dotenv
+dnspython
+streamlit
+requests
+dotenv

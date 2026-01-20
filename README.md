@@ -1,5 +1,6 @@
 # MathMinds AI
 
+<<<<<<< HEAD
 **MathMinds AI** is an intelligent analytical web application that leverages cutting-edge AI to help users solve and understand complex mathematical problems. It combines OCR for handwritten math, web scraping for word-problem context, and image analysis for probability/statistics questions — all accessible through an interactive Python-based interface.
 
 ## Final objective
@@ -41,3 +42,40 @@ The final objective is to build **"MathMinds AI,"** an intelligent analytical we
 - OCR tooling (Tesseract / ML-based OCR)  
 - LLM providers or local models (for natural language understanding and code generation)  
 - Vector embeddings + FAISS / Pinecone / Supabase (for retrieval)
+
+
+## Version1 
+
+## Prerequisites
+- Python 3.10+
+- Redis Server (running on localhost:6379)
+
+## Installation
+1. Create a virtual environment:
+   ```bash
+   python -m venv .venv
+   .venv\Scripts\activate
+   ```
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Create a `.env` file with your configuration (GOOGLE_API_KEY, REDIS_URL, etc.).
+
+## Running the System
+To start both the API and the Worker, double-click `run_all.bat` or run:
+```bash
+run_all.bat
+```
+
+### Manual Startup
+**API:**
+```bash
+run_api.bat
+```
+
+**Worker:**
+```bash
+run_worker.bat
+```
+>>>>>>> 523d4ed (system version1 with caching and UI)
