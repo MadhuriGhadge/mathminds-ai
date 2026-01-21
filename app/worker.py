@@ -27,21 +27,12 @@ celery_app.conf.update(
     task_track_started=True,
 )
 
-# Global orchestrator for the worker process
-# Initialized lazily to avoid issues during import or if worker just starts up
-_orchestrator = None
+from app.api.deps import get_orchestrator as _get_shared_orchestrator
 
 def get_orchestrator():
-    """Lazily initializes and returns the orchestrator instance."""
-    global _orchestrator
-    if _orchestrator is None:
-        try:
-            logger.info("Initializing Orchestrator in Celery worker...")
-            _orchestrator = Orchestrator()
-        except Exception as e:
-            logger.critical(f"Failed to initialize Orchestrator in worker: {e}")
-            raise
-    return _orchestrator
+    """Lazily initializes and returns the orchestrator instance (via shared deps)."""
+    # Using the shared dependency provider ensures connection pooling
+    return _get_shared_orchestrator()
 
 @celery_app.task(name="solve_problem_task", bind=True, acks_late=True)
 def solve_problem_task(self, user_input: str, request_id: str = None):

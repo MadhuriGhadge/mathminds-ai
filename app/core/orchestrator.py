@@ -18,14 +18,19 @@ class Orchestrator:
     Integrates input processing, memory, reasoning, and validation.
     """
 
-    def __init__(self):
+    def __init__(self, cache_manager: Optional[CacheManager] = None, db_manager: Optional[DatabaseManager] = None):
         """
         Initialize all sub-components.
+        Args:
+            cache_manager: Injectable CacheManager (singleton).
+            db_manager: Injectable DatabaseManager (singleton).
         """
         try:
             self.input_processor = InputProcessor()
-            self.cache_manager = CacheManager()
-            self.db_manager = DatabaseManager()
+            # If not provided, create fresh ones (backward compat or for tests)
+            # Ideally, these should always be provided by DI
+            self.cache_manager = cache_manager or CacheManager()
+            self.db_manager = db_manager or DatabaseManager()
             self.solver = GeminiSolver()
             self.validator = AnswerValidator()
         except Exception as e:
