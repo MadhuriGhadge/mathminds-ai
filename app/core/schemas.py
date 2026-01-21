@@ -14,6 +14,7 @@ class SolveResponse(BaseModel):
     status: str = Field(..., description="Status of the request (success/error).")
     answer: Optional[Dict[str, Any]] = Field(None, description=" Structured answer from the AI.")
     error: Optional[str] = Field(None, description="Error message if status is error.")
+    error_code: Optional[str] = Field(None, description="Error code if status is error.")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata about the processing.")
 
 class HealthResponse(BaseModel):
