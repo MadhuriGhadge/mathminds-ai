@@ -6,7 +6,8 @@ from typing import Any, Dict, Optional
 
 from google import genai
 from google.genai import types
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import pybreaker
+from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -31,6 +32,14 @@ class GeminiSolver:
         
         self.client = genai.Client(api_key=self.api_key)
         self.model_name = model_name
+        
+        # Initialize Circuit Breaker
+        # Trips after 5 consecutive failures, resets after 60 seconds
+        self.breaker = pybreaker.CircuitBreaker(
+            fail_max=5, 
+            reset_timeout=60,
+            listeners=[pybreaker.CircuitBreakerListener()] # Optional: add listeners for logging
+        )
 
     def _clean_text(self, text: str) -> str:
         """
@@ -84,11 +93,18 @@ class GeminiSolver:
 
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        wait=wait_random_exponential(multiplier=1, max=60),
         retry=retry_if_exception_type(Exception),
         reraise=True
     )
     def solve(self, problem_text: str) -> Dict[str, Any]:
+        """
+        Solves a math problem using Gemini, requesting structured JSON output.
+        Protected by Circuit Breaker.
+        """
+        return self.breaker.call(self._solve_internal, problem_text)
+
+    def _solve_internal(self, problem_text: str) -> Dict[str, Any]:
         """
         Solves a math problem using Gemini, requesting structured JSON output.
 

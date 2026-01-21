@@ -8,6 +8,7 @@ from app.memory.database import DatabaseManager
 from app.reasoning.gemini_client import GeminiSolver
 from app.utils.hashing import generate_problem_hash
 from app.validation.answer_checker import AnswerValidator
+from app.core.errors import ErrorCodes, ERROR_MESSAGES
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,8 @@ class Orchestrator:
         result = {
             "status": "error",
             "answer": None,
-            "error": None,
+            "error_code": None,
+            "error_msg": None,
             "metadata": {
                 "request_id": request_id, 
                 "stage": "init"
@@ -71,7 +73,7 @@ class Orchestrator:
         # 1. Input Processing
         try:
             result["metadata"]["stage"] = "input_processing"
-            logger.info(f"[{request_id}] Step 1: Processing input")
+            logger.info("Step 1: Processing input", extra={"request_id": request_id, "step": 1})
             processed_input = self.input_processor.process(user_input)
             
             if not processed_input.is_valid:
@@ -87,45 +89,58 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"[{request_id}] Input processing failed: {e}")
-            result["error"] = "Internal error during input processing."
-            result["metadata"]["error_detail"] = str(e)
+            result["error_code"] = ErrorCodes.INPUT_VALIDATION_ERROR
+            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.INPUT_VALIDATION_ERROR]
+            result["metadata"]["_internal_debug"] = str(e)
             return result
 
         # 2. Hashing
         try:
             result["metadata"]["stage"] = "hashing"
-            logger.info(f"[{request_id}] Step 2: Generating hash")
+            logger.info("Step 2: Generating hash", extra={"request_id": request_id, "step": 2})
             # We hash the normalized content
             problem_hash = generate_problem_hash(processed_input.cleaned_content)
             result["metadata"]["hash"] = problem_hash
         except Exception as e:
             logger.error(f"[{request_id}] Hashing failed: {e}")
-            result["error"] = "Internal error during hashing."
-            result["metadata"]["error_detail"] = str(e)
+            result["error_code"] = ErrorCodes.INTERNAL_ERROR
+            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.INTERNAL_ERROR]
+            result["metadata"]["_internal_debug"] = str(e)
             return result
 
         # 3. Memory Lookup (Cache & DB)
+        
+        # 3a. Cache Lookup
         try:
-            result["metadata"]["stage"] = "memory_lookup"
-            logger.info(f"[{request_id}] Step 3: Checking cache for hash {problem_hash}")
+            result["metadata"]["stage"] = "cache_lookup"
+            logger.info("Step 3: Checking cache", extra={"request_id": request_id, "hash": problem_hash, "step": 3})
             cached_answer = self.cache_manager.get_cached_answer(problem_hash)
             if cached_answer:
-                logger.info(f"[{request_id}] Cache hit!")
+                logger.info("Cache hit", extra={"request_id": request_id, "hash": problem_hash, "source": "cache"})
                 result["status"] = "success"
                 result["answer"] = cached_answer
                 result["metadata"]["source"] = "cache"
                 result["metadata"]["latency"] = time.time() - start_time
                 return result
-
-            logger.info(f"[{request_id}] Step 3b: Checking database for hash {problem_hash}")
+        except Exception as e:
+            logger.error(f"[{request_id}] Cache lookup failed: {e}")
+            # Fail open to DB
+        
+        # 3b. DB Lookup
+        try:
+            result["metadata"]["stage"] = "db_lookup"
+            logger.info("Step 3b: Checking database", extra={"request_id": request_id, "hash": problem_hash, "step": "3b"})
             db_record = self.db_manager.find_by_hash(problem_hash)
             if db_record and "answer" in db_record:
-                logger.info(f"[{request_id}] Database hit!")
+                logger.info("Database hit", extra={"request_id": request_id, "hash": problem_hash, "source": "database"})
                 answer_data = db_record["answer"]
                 
-                # Re-populate cache for future speed
-                self.cache_manager.set_cached_answer(problem_hash, answer_data)
-                
+                # Re-populate cache for future speed (Fire & Forget / Safe)
+                try:
+                    self.cache_manager.set_cached_answer(problem_hash, answer_data)
+                except Exception as cache_err:
+                     logger.warning(f"[{request_id}] Failed to repopulate cache: {cache_err}")
+
                 result["status"] = "success"
                 result["answer"] = answer_data
                 result["metadata"]["source"] = "database"
@@ -133,22 +148,21 @@ class Orchestrator:
                 return result
 
         except Exception as e:
-            logger.error(f"[{request_id}] Memory lookup failed: {e}")
-            # We continue to solve instead of failing, as memory is optimization
+            logger.error(f"[{request_id}] Database lookup failed: {e}")
+            # Fail open to Solver
+            
         
         # 4. Reasoning (Gemini)
         try:
             result["metadata"]["stage"] = "reasoning"
-            logger.info(f"[{request_id}] Step 4: Solving problem with Gemini")
+            logger.info("Step 4: Solving problem with Gemini", extra={"request_id": request_id, "step": 4})
             # We pass the cleaned content
             generated_solution = self.solver.solve(processed_input.cleaned_content)
         except Exception as e:
             logger.error(f"[{request_id}] Solver failed: {e}")
-            result["error"] = "Failed to solve the problem. Please try again later."
-            result["metadata"]["error_detail"] = str(e)
-            # Capture raw response if it was a parsing error (heuristic check on message)
-            if "Failed to parse JSON" in str(e):
-                 result["metadata"]["raw_response_snippet"] = str(e)
+            result["error_code"] = ErrorCodes.GEMINI_ERROR
+            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.GEMINI_ERROR]
+            result["metadata"]["_internal_debug"] = str(e)
             return result
 
 
@@ -162,13 +176,17 @@ class Orchestrator:
 
             if not is_valid:
                 logger.warning(f"Validation failed: {validation_errors}")
-                result["error"] = f"Generated answer failed validation: {', '.join(validation_errors)}"
+                result["error_code"] = ErrorCodes.GEMINI_ERROR # Or Validation Error
+                result["error_msg"] = f"Generated answer failed validation."
+                result["metadata"]["validation_errors"] = validation_errors
                 # We do NOT store invalid answers
                 return result
 
         except Exception as e:
             logger.error(f"Validation step failed: {e}")
-            result["error"] = "Internal error during answer validation."
+            result["error_code"] = ErrorCodes.INTERNAL_ERROR
+            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.INTERNAL_ERROR]
+            result["metadata"]["_internal_debug"] = str(e)
             return result
 
         # 6. Storage & Caching
