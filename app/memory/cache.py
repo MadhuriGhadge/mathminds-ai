@@ -15,28 +15,34 @@ class CacheManager:
     Handles connections, serialization, and failure scenarios gracefully.
     """
 
-    def __init__(self, redis_url: Optional[str] = None):
+    def __init__(self, redis_url: Optional[str] = None, connection_pool: Optional[redis.ConnectionPool] = None):
         """
         Initialize the CacheManager.
 
         Args:
-            redis_url: Redis connection string. Defaults to environment variable 
-                       REDIS_URL or localhost.
+            redis_url: Redis connection string (used if pool not provided).
+            connection_pool: Existing Redis connection pool.
         """
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self.redis_client = None
-        self._connect()
-
-    def _connect(self):
-        """Attempts to establish a connection to Redis."""
+        
         try:
-            self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
+            if connection_pool:
+                self.redis_client = redis.Redis(connection_pool=connection_pool, decode_responses=True)
+            else:
+                # If no pool provided, create standard client (which uses internal pool)
+                # But typically we want to pass the pool.
+                self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
+            
             # Fast ping to verify connection
             self.redis_client.ping()
             logger.info(f"Successfully connected to Redis at {self.redis_url}")
+        
         except RedisError as e:
             logger.error(f"Failed to connect to Redis: {e}")
             self.redis_client = None
+
+    # _connect method is removed/merged into __init__ since we prefer injection
 
     def get_cached_answer(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """

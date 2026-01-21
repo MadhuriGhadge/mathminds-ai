@@ -139,6 +139,7 @@ if prompt := st.chat_input("Enter a math problem..."):
                 if response.status_code == 200:
                     data = response.json()
                     status = data.get("status")
+                    metadata = data.get("metadata", {})
                     
                     if status == "success":
                         # --- New Beautiful Rendering ---
@@ -147,7 +148,6 @@ if prompt := st.chat_input("Enter a math problem..."):
                             # 1. Problem
                             st.markdown("### 📘 Problem")
                             problem_latex = answer_data.get("latex", "")
-                            # Strip $ if present for st.latex to avoid double wrapping issues if varied
                             cleaned_latex = problem_latex.replace("$", "") 
                             if cleaned_latex:
                                 st.latex(cleaned_latex)
@@ -165,38 +165,38 @@ if prompt := st.chat_input("Enter a math problem..."):
                             st.success(final_ans)
 
                             # 4. Confidence
-                            st.markdown("### 🔒 Confidence")
                             score = float(answer_data.get("confidence_score", 0.0))
-
-                            st.caption(f"Confidence: {int(score*100)}%")
-                        
+                            st.progress(score)
+                            
                         else:
-                            # Fallback if answer isn't a dict (shouldn't happen with new strict backend)
                             st.warning("Received unstructured answer.")
                             st.write(answer_data)
                         
-                        # Add metadata if available (e.g. time taken, steps)
-                        # metadata = data.get("metadata", {})
-                        # if metadata:
-                        #    full_response += f"\n\n*Complexity: {metadata.get('complexity', 'N/A')}*"
+                        # Debug Info / Metadata
+                        with st.expander("🛠️ Debug Info"):
+                            st.json(metadata)
+                            st.text(f"Request ID: {response.headers.get('X-Request-ID')}")
 
                     else:
                         full_response = f"**Status:** {status}\n\nCould not solve the problem."
                         if "error" in data:
+                            st.error(f"Error: {data['error']}")
                             full_response += f"\nError: {data['error']}"
+                        
+                        # Show error metadata
+                        with st.expander("🐞 Error Details"):
+                            st.json(metadata)
+                            st.text(f"Request ID: {response.headers.get('X-Request-ID')}")
+                            
                 else:
-                    full_response = f"Error: Server returned status {response.status_code}"
+                    st.error(f"Error: Server returned status {response.status_code}")
+                    st.text(f"Request ID: {response.headers.get('X-Request-ID')}")
             
             except requests.exceptions.ConnectionError:
-                full_response = "❌ **Error:** Could not connect to the backend. Is it running?"
+                st.error("❌ **Error:** Could not connect to the backend. Is it running?")
             except Exception as e:
-                full_response = f"❌ **Error:** {str(e)}"
+                st.error(f"❌ **Error:** {str(e)}")
         
-        # Simulate typing effect for realism (optional, kept fast)
-        # for chunk in full_response.split():
-        #     time.sleep(0.05)
-        #     # ...
-        
-        message_placeholder.markdown(full_response)
-        st.session_state.messages.append({"role": "assistant", "content": full_response})
+        # message_placeholder.markdown(full_response)
+        # st.session_state.messages.append({"role": "assistant", "content": full_response})
 

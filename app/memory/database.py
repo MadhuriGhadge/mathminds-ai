@@ -16,57 +16,59 @@ class DatabaseManager:
     Handles persistent storage of solved problems and connection management.
     """
 
-    def __init__(self, mongo_uri: Optional[str] = None):
+    def __init__(self, mongo_uri: Optional[str] = None, client: Optional[pymongo.MongoClient] = None):
         """
         Initialize the DatabaseManager.
 
         Args:
-            mongo_uri: MongoDB connection string. Defaults to environment variable 
-                       MONGO_URI or localhost default.
+            mongo_uri: MongoDB connection string.
+            client: Existing PyMongo client (shared pool).
         """
         self.mongo_uri = mongo_uri or os.getenv("MONGO_URI", "mongodb://localhost:27017/")
         self.client = None
         self.db = None
         self.collection = None
-        self._connect()
-
-    def _connect(self):
-        """Attempts to establish a connection to MongoDB and ensure indexes."""
+        
         try:
-            # simple connect to avoid hanging indefinitely if server is down, use serverSelectionTimeoutMS
-            self.client = pymongo.MongoClient(self.mongo_uri, serverSelectionTimeoutMS=5000)
+            if client:
+                self.client = client
+            else:
+                # Create new client with specific pool settings if not provided
+                self.client = pymongo.MongoClient(
+                    self.mongo_uri, 
+                    serverSelectionTimeoutMS=5000,
+                    minPoolSize=1,  # Keep at least one connection open
+                    maxPoolSize=50  # Limit max connections
+                )
             
             # Force a call to check if the server is available
             self.client.server_info()
             
-            # Assuming a default database name 'mathminds_ai' if not present in URI, 
-            # but usually it's better to pick one fixed name for the app.
+            # Setup DB and collection
             db_name = "mathminds_ai"
             try:
-                # If uri has database name, use it
                 uri_db = pymongo.uri_parser.parse_uri(self.mongo_uri).get('database')
                 if uri_db:
                     db_name = uri_db
             except Exception:
-                pass # Fallback to default
+                pass
 
             self.db = self.client[db_name]
             self.collection = self.db["solved_problems"]
             
-            # Ensure index on 'hash' field unique=True likely best for deduplication
-            # User asked for "Index hash field", but didn't explicitly say unique.
-            # Given "problem deduplication" context earlier, unique is safer, but I'll stick to non-unique 
-            # unless implied, to be safe. Actually, 'hash' usually implies Uniqueness for lookup.
-            # Let's create a regular index for performance as requested.
+            # Ensure index
             index = IndexModel([("hash", ASCENDING)], name="hash_index")
             self.collection.create_indexes([index])
             
             logger.info(f"Successfully connected to MongoDB at {self.mongo_uri} (DB: {db_name})")
+            
         except (PyMongoError, ServerSelectionTimeoutError) as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
             self.client = None
             self.db = None
             self.collection = None
+
+    # _connect is merged into __init__
 
     def find_by_hash(self, problem_hash: str) -> Optional[Dict[str, Any]]:
         """
