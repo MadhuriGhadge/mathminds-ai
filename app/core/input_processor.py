@@ -147,7 +147,7 @@ class InputProcessor:
         # For now, let's assume max_length applies to text/latex/url
         if input_type == InputType.BASE64_IMAGE:
              # Heuristic check for base64 validity
-             if len(content) > 5_000_000: # Example 5MB limit catch
+             if len(content) > 5_000_000: #5MB limit catch
                  return False, "Image data too large."
              # Further base64 validation could be done here if needed
              return True, None

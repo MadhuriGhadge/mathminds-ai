@@ -32,7 +32,7 @@ class Orchestrator:
             logger.critical(f"Failed to initialize Orchestrator components: {e}")
             raise
 
-    def process_problem(self, user_input: str) -> Dict[str, Any]:
+    def process_problem(self, user_input: str, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Orchestrates the problem solving pipeline.
 
@@ -47,6 +47,7 @@ class Orchestrator:
 
         Args:
             user_input: The raw problem string from the user.
+            request_id: Optional UUID for request tracing.
 
         Returns:
             Dict[str, Any]: The final result including answer, metadata, and status.
@@ -56,16 +57,20 @@ class Orchestrator:
             "status": "error",
             "answer": None,
             "error": None,
-            "metadata": {}
+            "metadata": {
+                "request_id": request_id, 
+                "stage": "init"
+            }
         }
 
         # 1. Input Processing
         try:
-            logger.info("Step 1: Processing input")
+            result["metadata"]["stage"] = "input_processing"
+            logger.info(f"[{request_id}] Step 1: Processing input")
             processed_input = self.input_processor.process(user_input)
             
             if not processed_input.is_valid:
-                logger.warning(f"Invalid input: {processed_input.error_message}")
+                logger.warning(f"[{request_id}] Invalid input: {processed_input.error_message}")
                 result["error"] = processed_input.error_message
                 return result
             
@@ -76,37 +81,41 @@ class Orchestrator:
                 pass
 
         except Exception as e:
-            logger.error(f"Input processing failed: {e}")
+            logger.error(f"[{request_id}] Input processing failed: {e}")
             result["error"] = "Internal error during input processing."
+            result["metadata"]["error_detail"] = str(e)
             return result
 
         # 2. Hashing
         try:
-            logger.info("Step 2: Generating hash")
+            result["metadata"]["stage"] = "hashing"
+            logger.info(f"[{request_id}] Step 2: Generating hash")
             # We hash the normalized content
             problem_hash = generate_problem_hash(processed_input.cleaned_content)
             result["metadata"]["hash"] = problem_hash
         except Exception as e:
-            logger.error(f"Hashing failed: {e}")
+            logger.error(f"[{request_id}] Hashing failed: {e}")
             result["error"] = "Internal error during hashing."
+            result["metadata"]["error_detail"] = str(e)
             return result
 
         # 3. Memory Lookup (Cache & DB)
         try:
-            logger.info(f"Step 3: Checking cache for hash {problem_hash}")
+            result["metadata"]["stage"] = "memory_lookup"
+            logger.info(f"[{request_id}] Step 3: Checking cache for hash {problem_hash}")
             cached_answer = self.cache_manager.get_cached_answer(problem_hash)
             if cached_answer:
-                logger.info("Cache hit!")
+                logger.info(f"[{request_id}] Cache hit!")
                 result["status"] = "success"
                 result["answer"] = cached_answer
                 result["metadata"]["source"] = "cache"
                 result["metadata"]["latency"] = time.time() - start_time
                 return result
 
-            logger.info(f"Step 3b: Checking database for hash {problem_hash}")
+            logger.info(f"[{request_id}] Step 3b: Checking database for hash {problem_hash}")
             db_record = self.db_manager.find_by_hash(problem_hash)
             if db_record and "answer" in db_record:
-                logger.info("Database hit!")
+                logger.info(f"[{request_id}] Database hit!")
                 answer_data = db_record["answer"]
                 
                 # Re-populate cache for future speed
@@ -119,18 +128,24 @@ class Orchestrator:
                 return result
 
         except Exception as e:
-            logger.error(f"Memory lookup failed: {e}")
+            logger.error(f"[{request_id}] Memory lookup failed: {e}")
             # We continue to solve instead of failing, as memory is optimization
         
         # 4. Reasoning (Gemini)
         try:
-            logger.info("Step 4: Solving problem with Gemini")
+            result["metadata"]["stage"] = "reasoning"
+            logger.info(f"[{request_id}] Step 4: Solving problem with Gemini")
             # We pass the cleaned content
             generated_solution = self.solver.solve(processed_input.cleaned_content)
         except Exception as e:
-            logger.error(f"Solver failed: {e}")
+            logger.error(f"[{request_id}] Solver failed: {e}")
             result["error"] = "Failed to solve the problem. Please try again later."
+            result["metadata"]["error_detail"] = str(e)
+            # Capture raw response if it was a parsing error (heuristic check on message)
+            if "Failed to parse JSON" in str(e):
+                 result["metadata"]["raw_response_snippet"] = str(e)
             return result
+
 
         # 5. Validation
         try:

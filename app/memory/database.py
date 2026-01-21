@@ -73,7 +73,7 @@ class DatabaseManager:
         Retrieve a solved problem by its hash.
 
         Args:
-            problem_hash: The has generated for the problem text.
+            problem_hash: The hash generated for the problem text.
 
         Returns:
             Optional[Dict[str, Any]]: The document if found, else None.

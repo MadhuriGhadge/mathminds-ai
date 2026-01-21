@@ -77,6 +77,7 @@ st.markdown("""
     footer {visibility: hidden;}
     
 </style>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 """, unsafe_allow_html=True)
 
 # --- Header ---
@@ -140,9 +141,39 @@ if prompt := st.chat_input("Enter a math problem..."):
                     status = data.get("status")
                     
                     if status == "success":
-                        answer = data.get("answer", "No answer provided.")
-                        # Format the output nicely
-                        full_response = f"### Solution\n\n{answer}\n"
+                        # --- New Beautiful Rendering ---
+                        answer_data = data.get("answer", {})
+                        if isinstance(answer_data, dict):
+                            # 1. Problem
+                            st.markdown("### 📘 Problem")
+                            problem_latex = answer_data.get("latex", "")
+                            # Strip $ if present for st.latex to avoid double wrapping issues if varied
+                            cleaned_latex = problem_latex.replace("$", "") 
+                            if cleaned_latex:
+                                st.latex(cleaned_latex)
+                            else:
+                                st.write("No LaTeX provided.")
+
+                            # 2. Reasoning
+                            st.markdown("### 🧠 Reasoning")
+                            reasoning = answer_data.get("reasoning", "No reasoning provided.")
+                            st.markdown(reasoning, unsafe_allow_html=True)
+
+                            # 3. Final Answer
+                            st.markdown("### ✅ Final Answer")
+                            final_ans = answer_data.get("final_answer", "N/A")
+                            st.success(final_ans)
+
+                            # 4. Confidence
+                            st.markdown("### 🔒 Confidence")
+                            score = float(answer_data.get("confidence_score", 0.0))
+
+                            st.caption(f"Confidence: {int(score*100)}%")
+                        
+                        else:
+                            # Fallback if answer isn't a dict (shouldn't happen with new strict backend)
+                            st.warning("Received unstructured answer.")
+                            st.write(answer_data)
                         
                         # Add metadata if available (e.g. time taken, steps)
                         # metadata = data.get("metadata", {})
