@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, status, Depends, Request
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.core.limiter import limiter
 from app.core.orchestrator import Orchestrator
 from app.core.schemas import SolveRequest, SolveResponse, HealthResponse
 # Import dependency
@@ -20,6 +23,10 @@ app = FastAPI(
     description="API for solving math problems using Gemini and local reasoning.",
     version="1.0.0"
 )
+
+# Initialize Rate Limiter
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
@@ -41,16 +48,17 @@ async def health_check(orchestrator: Orchestrator = Depends(get_orchestrator)):
     return {"status": "healthy", "version": "1.0.0"}
 
 @app.post("/solve", response_model=SolveResponse)
+@limiter.limit("5/minute")
 async def solve_problem(
-    request: SolveRequest, 
-    raw_request: Request,
+    request: Request,
+    solve_req: SolveRequest, 
     orchestrator: Orchestrator = Depends(get_orchestrator)
 ):
     """
-    Solves a math problem provided in the request body.
+    Solves a mocked problem provided in the request body.
     """
     # Grab request_id from state
-    req_id = getattr(raw_request.state, "request_id", str(uuid.uuid4()))
+    req_id = getattr(request.state, "request_id", str(uuid.uuid4()))
 
     if not orchestrator:
         raise HTTPException(
@@ -59,7 +67,7 @@ async def solve_problem(
         )
 
     try:
-        result = orchestrator.process_problem(request.input, request_id=req_id)
+        result = orchestrator.process_problem(solve_req.input, request_id=req_id)
         
         # Map internal result to schema
         # The Orchestrator returns a dict that matches the SolveResponse structure mostly
