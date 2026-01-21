@@ -1,5 +1,6 @@
 import os
 import logging
+import uuid
 from celery import Celery
 from app.core.orchestrator import Orchestrator
 
@@ -43,16 +44,19 @@ def get_orchestrator():
     return _orchestrator
 
 @celery_app.task(name="solve_problem_task", bind=True, acks_late=True)
-def solve_problem_task(self, user_input: str):
+def solve_problem_task(self, user_input: str, request_id: str = None):
     """
     Celery task to asynchronously solve a math problem.
     """
+    if not request_id:
+        request_id = str(uuid.uuid4())
+        
     try:
         orchestrator = get_orchestrator()
-        result = orchestrator.process_problem(user_input)
+        result = orchestrator.process_problem(user_input, request_id=request_id)
         return result
     except Exception as e:
-        logger.error(f"Error in solve_problem_task: {e}")
+        logger.error(f"[{request_id}] Error in solve_problem_task: {e}")
         # Optionally retry
         # raise self.retry(exc=e, countdown=5, max_retries=3)
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": str(e), "metadata": {"request_id": request_id, "stage": "worker"}}
