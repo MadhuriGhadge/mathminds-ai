@@ -1,4 +1,6 @@
 import logging
+import datetime
+from datetime import datetime
 import uuid
 from dotenv import load_dotenv
 
@@ -15,8 +17,9 @@ from app.core.orchestrator import Orchestrator
 from app.core.schemas import SolveRequest, SolveResponse, HealthResponse
 from app.core.logging_config import configure_logging
 from app.core.errors import AppError, ErrorCodes, ERROR_MESSAGES
+import os
 # Import dependency
-from app.api.deps import get_orchestrator
+from app.api.deps import get_orchestrator, get_redis_pool, get_mongo_client
 
 # Configure logging
 configure_logging()
@@ -34,13 +37,34 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
+    """Handle application-level errors with proper HTTP status codes."""
+    
+    # Map error codes to HTTP status codes
+    error_to_status = {
+        ErrorCodes.INPUT_VALIDATION_ERROR: status.HTTP_400_BAD_REQUEST,
+        ErrorCodes.RESOURCE_NOT_FOUND: status.HTTP_404_NOT_FOUND,
+        ErrorCodes.DEPENDENCY_ERROR: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCodes.GEMINI_ERROR: status.HTTP_503_SERVICE_UNAVAILABLE,
+        ErrorCodes.RATE_LIMIT_EXCEEDED: status.HTTP_429_TOO_MANY_REQUESTS,
+        ErrorCodes.INTERNAL_ERROR: status.HTTP_500_INTERNAL_SERVER_ERROR,
+    }
+    
+    http_status = error_to_status.get(exc.code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    request_id = getattr(request.state, "request_id", "unknown")
+    
+    logger.error(f"[{request_id}] AppError: {exc.code} - {exc.message}")
+    
     return JSONResponse(
-        status_code=status.HTTP_400_BAD_REQUEST, # Or 500 depending on code
+        status_code=http_status,
         content={
             "status": "error",
             "error": exc.message,
             "error_code": exc.code,
-            "metadata": {}
+            "metadata": {
+                "request_id": request_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
         }
     )
 
@@ -70,17 +94,57 @@ async def add_request_id(request: Request, call_next):
     
     return response
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check(orchestrator: Orchestrator = Depends(get_orchestrator)):
-    """
-    Health check endpoint.
-    """
-    if not orchestrator:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="System failing to initialize"
-        )
-    return {"status": "healthy", "version": "1.0.0"}
+@app.get("/health")
+async def health_check():
+    """Detailed health check endpoint."""
+    health_status = {
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": datetime.utcnow().isoformat(),
+        "components": {}
+    }
+    
+    # Check Redis
+    try:
+        redis_pool = get_redis_pool()
+        if redis_pool:
+            conn = redis_pool.get_connection('health_check')
+            conn.ping()
+            redis_pool.release(conn)
+            health_status["components"]["redis"] = "✓ healthy"
+        else:
+            health_status["components"]["redis"] = "✗ unavailable"
+    except Exception as e:
+        health_status["components"]["redis"] = f"✗ error: {str(e)}"
+    
+    # Check MongoDB
+    try:
+        mongo_client = get_mongo_client()
+        if mongo_client:
+            # Low timeout ping
+            mongo_client.admin.command('ping')
+            health_status["components"]["mongodb"] = "✓ healthy"
+        else:
+            health_status["components"]["mongodb"] = "✗ unavailable"
+    except Exception as e:
+        health_status["components"]["mongodb"] = f"✗ error: {str(e)}"
+    
+    # Check Gemini
+    try:
+        # Just verify we have API key
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if api_key:
+            health_status["components"]["gemini"] = "✓ configured"
+        else:
+            health_status["components"]["gemini"] = "✗ not configured"
+    except Exception as e:
+        health_status["components"]["gemini"] = f"✗ error: {str(e)}"
+    
+    # Overall status
+    if any("✗" in str(v) for v in health_status["components"].values()):
+        health_status["status"] = "degraded"
+    
+    return health_status
 
 @app.post("/solve", response_model=SolveResponse)
 @limiter.limit("5/minute")
@@ -102,7 +166,7 @@ async def solve_problem(
         )
 
     try:
-        result = orchestrator.process_problem(solve_req.input, request_id=req_id)
+        result = await orchestrator.process_problem(solve_req.input, request_id=req_id)
         
         # Sanitize metadata for public response
         public_metadata = result["metadata"].copy()

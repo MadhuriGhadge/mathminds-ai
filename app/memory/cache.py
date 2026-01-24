@@ -97,3 +97,34 @@ class CacheManager:
             # TypeError catches JSON serialization errors
             logger.error(f"Failed to cache answer for key {cache_key}: {e}")
             return False
+
+    def set_if_not_exists(self, cache_key: str, answer: Dict[str, Any], ttl: int = 86400) -> bool:
+        """
+        Set cache only if key doesn't exist (atomic operation).
+        Prevents thundering herd when multiple requests populate cache.
+        
+        Args:
+            cache_key: The unique hash key.
+            answer: The answer data to cache.
+            ttl: Time-to-live in seconds.
+
+        Returns:
+            bool: True if set, False if key already existed or error.
+        """
+        if not self.redis_client:
+            return False
+        
+        try:
+            serialized_data = json.dumps(answer)
+            # SETNX is atomic - only succeeds if key doesn't exist
+            # Redis-py set() with nx=True is equivalent to SETNX + EXPIRE
+            result = self.redis_client.set(
+                cache_key, 
+                serialized_data, 
+                ex=ttl, 
+                nx=True  # Only set if not exists
+            )
+            return bool(result)
+        except Exception as e:
+            logger.error(f"Failed to set_if_not_exists for {cache_key}: {e}")
+            return False

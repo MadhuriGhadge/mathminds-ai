@@ -38,7 +38,7 @@ class Orchestrator:
             logger.critical(f"Failed to initialize Orchestrator components: {e}")
             raise
 
-    def process_problem(self, user_input: str, request_id: Optional[str] = None) -> Dict[str, Any]:
+    async def process_problem(self, user_input: str, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Orchestrates the problem solving pipeline.
 
@@ -81,11 +81,9 @@ class Orchestrator:
                 result["error"] = processed_input.error_message
                 return result
             
-            # Additional input safety check, we only handle text/latex logic here effectively for now
-            if processed_input.input_type not in (InputType.TEXT, InputType.LATEX):
-                # Placeholder for image handling logic if we were to implement it
-                # For now, treat as text or fail if strictly text required
-                pass
+            # Input type check: We support TEXT, LATEX, and now BASE64_IMAGE/IMAGE_URL
+            # Logic is handled by InputProcessor and Solver
+            pass
 
         except Exception as e:
             logger.error(f"[{request_id}] Input processing failed: {e}")
@@ -135,9 +133,9 @@ class Orchestrator:
                 logger.info("Database hit", extra={"request_id": request_id, "hash": problem_hash, "source": "database"})
                 answer_data = db_record["answer"]
                 
-                # Re-populate cache for future speed (Fire & Forget / Safe)
+                # Re-populate cache for future speed (Safe: Atomic if not exists)
                 try:
-                    self.cache_manager.set_cached_answer(problem_hash, answer_data)
+                    self.cache_manager.set_if_not_exists(problem_hash, answer_data)
                 except Exception as cache_err:
                      logger.warning(f"[{request_id}] Failed to repopulate cache: {cache_err}")
 
@@ -156,8 +154,14 @@ class Orchestrator:
         try:
             result["metadata"]["stage"] = "reasoning"
             logger.info("Step 4: Solving problem with Gemini", extra={"request_id": request_id, "step": 4})
-            # We pass the cleaned content
-            generated_solution = self.solver.solve(processed_input.cleaned_content)
+            
+            # Extract image data if available
+            image_data = None
+            if processed_input.metadata and "image_data" in processed_input.metadata:
+                image_data = processed_input.metadata["image_data"]
+                
+            # We pass the cleaned content (text/OCR) AND the raw image data if present
+            generated_solution = await self.solver.solve(processed_input.cleaned_content, image_data=image_data)
         except Exception as e:
             logger.error(f"[{request_id}] Solver failed: {e}")
             result["error_code"] = ErrorCodes.GEMINI_ERROR

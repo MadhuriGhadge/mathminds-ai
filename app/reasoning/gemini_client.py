@@ -2,6 +2,9 @@ import json
 import logging
 import os
 import re
+import base64
+import asyncio
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from google import genai
@@ -97,25 +100,45 @@ class GeminiSolver:
         retry=retry_if_exception_type(Exception),
         reraise=True
     )
-    def solve(self, problem_text: str) -> Dict[str, Any]:
+    async def solve(self, problem_text: str, image_data: Optional[str] = None) -> Dict[str, Any]:
         """
-        Solves a math problem using Gemini, requesting structured JSON output.
-        Protected by Circuit Breaker.
+        Solves a math problem using Gemini with timeout protection.
+        Args:
+            problem_text: The text prompt/context.
+            image_data: Optional Base64 encoded image string (without prefix).
         """
-        return self.breaker.call(self._solve_internal, problem_text)
+        return await self.breaker.call(
+            self._solve_with_timeout,
+            problem_text,
+            image_data,
+            timeout=30  # seconds
+        )
 
-    def _solve_internal(self, problem_text: str) -> Dict[str, Any]:
+    async def _solve_with_timeout(self, problem_text: str, image_data: Optional[str] = None, timeout: int = 30) -> Dict[str, Any]:
+        """Solve with timeout enforcement."""
+        try:
+            # Wrap in timeout context
+            result = await asyncio.wait_for(
+                asyncio.to_thread(self._solve_internal, problem_text, image_data),
+                timeout=timeout
+            )
+            return result
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Gemini API did not respond within {timeout}s")
+
+    def _solve_internal(self, problem_text: str, image_data: Optional[str] = None) -> Dict[str, Any]:
         """
         Solves a math problem using Gemini, requesting structured JSON output.
 
         Args:
             problem_text: The math problem text.
+            image_data: Optional Base64 image data.
 
         Returns:
             Dict[str, Any]: Structured solution containing latex, reasoning, answer, confidence.
         """
-        if not problem_text:
-            raise ValueError("Problem text cannot be empty.")
+        if not problem_text and not image_data:
+             raise ValueError("Input cannot be empty.")
 
         prompt = f"""
         You are a high-efficiency math solver. Output strictly valid JSON.
@@ -135,16 +158,36 @@ class GeminiSolver:
         - Do NOT use unicode math symbols.
         - Do NOT split words with spaces.
         - Do NOT insert newlines inside formulas.
+        - If an image is provided, extracting the problem from it is priority #1.
 
-        Problem:
+        Problem Context:
         {problem_text}
         """
+        
+        # Prepare contents
+        contents = [prompt]
+        
+        if image_data:
+            try:
+                # Decode base64 to bytes
+                image_bytes = base64.b64decode(image_data)
+                # Ensure we handle common image formats, defaulting to png if unknown/generic
+                # Ideally we pass mime_type, but 'image/png' works for most or we can detect.
+                # Since InputProcessor handles headers, we assume valid image bytes.
+                # types.Part maps to the SDK's Part object
+                from google.genai import types
+                image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
+                contents.append(image_part)
+            except Exception as e:
+                logger.warning(f"Failed to process image attachment: {e}")
+                # Put a note in prompt instead
+                contents[0] += "\n[Error: Image attachment failed to load, rely on text]"
 
         try:
             # New SDK usage
             response = self.client.models.generate_content(
                 model=self.model_name,
-                contents=prompt,
+                contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.2
