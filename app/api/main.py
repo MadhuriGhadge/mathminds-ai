@@ -166,7 +166,11 @@ async def solve_problem(
         )
 
     try:
-        result = await orchestrator.process_problem(solve_req.input, request_id=req_id)
+        result = await orchestrator.process_problem(
+            text=solve_req.text, 
+            image=solve_req.image, 
+            request_id=req_id
+        )
         
         # Sanitize metadata for public response
         public_metadata = result["metadata"].copy()

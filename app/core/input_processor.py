@@ -12,7 +12,12 @@ class InputType(enum.Enum):
     LATEX = "latex"
     IMAGE_URL = "image_url"
     BASE64_IMAGE = "base64_image"
+    MULTIMODAL = "multimodal"
     UNKNOWN = "unknown"
+
+# ... (omitted dataclass, no changes needed there) ...
+
+
 
 @dataclass
 class ProcessingResult:
@@ -49,6 +54,78 @@ class InputProcessor:
         ]
         self.ocr_processor = OCRProcessor()
 
+    def process_compound(self, text_input: Optional[str] = None, image_input: Optional[str] = None) -> ProcessingResult:
+        """
+        Process combined text and image input.
+        
+        Args:
+            text_input: Optional text query.
+            image_input: Optional image (Base64 or URL).
+            
+        Returns:
+            ProcessingResult: Combined result.
+        """
+        cleaned_text = ""
+        image_data = None
+        detected_type = InputType.UNKNOWN
+        error_msg = None
+        
+        # 1. Process Image if present
+        if image_input:
+            # Detect if URL or Base64 (naive check)
+            if image_input.startswith("http") and "://" in image_input:
+                 # URL -> Download
+                 image_data = self.ocr_processor.download_image_as_base64(image_input)
+                 if not image_data:
+                     return ProcessingResult(InputType.IMAGE_URL, "", False, "Failed to download image.")
+                 detected_type = InputType.IMAGE_URL # Or promote to MULTIMODAL later
+            else:
+                 # Assume Base64
+                 # Strip prefix if needed
+                 if ";base64," in image_input:
+                    _, raw_b64 = image_input.split(";base64,")
+                 else:
+                    raw_b64 = image_input.strip()
+                 
+                 # Basic validation?
+                 if len(raw_b64) < 10:
+                      return ProcessingResult(InputType.BASE64_IMAGE, "", False, "Invalid image data.")
+                 
+                 image_data = raw_b64
+                 detected_type = InputType.BASE64_IMAGE
+
+        # 2. Process Text if present
+        if text_input:
+            cleaned_text = self._normalize_text(text_input)
+            
+            # If we also have an image, it's MULTIMODAL
+            if image_data:
+                detected_type = InputType.MULTIMODAL
+            elif detected_type == InputType.UNKNOWN:
+                # Text only, refined detection (latex vs text)
+                detected_type = self._detect_type(cleaned_text)
+        
+        # 3. Final Validation
+        if not cleaned_text and not image_data:
+             return ProcessingResult(InputType.UNKNOWN, "", False, "No valid input provided.")
+             
+        metadata = {}
+        if image_data:
+            metadata["image_data"] = image_data
+
+        # Validate text content if present (length, safety)
+        if cleaned_text:
+             is_valid, err = self._validate(cleaned_text, detected_type)
+             if not is_valid:
+                  return ProcessingResult(detected_type, cleaned_text, False, err)
+        
+        return ProcessingResult(
+            input_type=detected_type,
+            cleaned_content=cleaned_text,
+            is_valid=True,
+            metadata=metadata
+        )
+
     def process(self, input_data: str) -> ProcessingResult:
         """
         Process the raw input string: detect type, normalize, and validate.
@@ -62,6 +139,7 @@ class InputProcessor:
         if not input_data:
             return ProcessingResult(InputType.UNKNOWN, "", False, "Input cannot be empty.")
 
+        metadata = None
         detected_type = self._detect_type(input_data)
         
         if detected_type in (InputType.TEXT, InputType.LATEX):
@@ -77,39 +155,29 @@ class InputProcessor:
              except ValueError:
                  return ProcessingResult(detected_type, "", False, "Invalid base64 image format.")
 
-             # Run OCR for hashing/indexing (still useful for text representation)
-             extracted_text = self.ocr_processor.process_base64(input_data)
-             
-             if not extracted_text:
-                 # Fallback: validation error? Or allow empty text if image is good?
-                 # If we rely on Vision, maybe we don't strictly NEED text here, 
-                 # but for now let's keep the check to ensure image is readable.
-                 return ProcessingResult(detected_type, "", False, "Failed to process image or no text found.")
-             
-             # Additional validation: ensure extracted text is meaningful 
-             # (Note: With Vision, this might be less critical, but good for filtering garbage uploads)
-             if len(extracted_text.strip()) < 3:
-                 return ProcessingResult(
-                     detected_type,
-                     "",
-                     False,
-                     "Extracted text too short. Please provide a clearer image."
-                 )
-             
-             # Check for common OCR artifacts
-             extracted_text = self._remove_ocr_artifacts(extracted_text)
-             
-             cleaned_content = self._normalize_text(extracted_text)
+             # Skip OCR for Base64 images to avoid "double work" and latency.
+             # We rely on Gemini Vision to read the image directly.
+             # cleaned_content is set to empty string; hashing will rely on image_data hash.
+             extracted_text = "" 
              
              # Attach image data to result
-             metadata = {"image_data": raw_b64}
+             # Optimize image (resize/compress) to reduce token count and bandwidth
+             optimized_b64 = self.ocr_processor.optimize_base64(raw_b64)
+             
+             metadata = {"image_data": optimized_b64}
+             cleaned_content = ""
         elif detected_type == InputType.IMAGE_URL:
-             # Process URL
-             extracted_text = self.ocr_processor.process_url(input_data)
-             if not extracted_text:
-                 return ProcessingResult(detected_type, "", False, "Failed to download image or no text found.")
-             cleaned_content = self._normalize_text(extracted_text)
-             metadata = None
+             # Process URL: Download and pass as image to Vision (Skip OCR)
+             # extracted_text = self.ocr_processor.process_url(input_data)
+             
+             raw_b64 = self.ocr_processor.download_image_as_base64(input_data)
+             
+             if not raw_b64:
+                 return ProcessingResult(detected_type, "", False, "Failed to download image from URL.")
+                 
+             # Attach image data (Vision will use this)
+             metadata = {"image_data": raw_b64}
+             cleaned_content = ""
         else:
             cleaned_content = input_data.strip()
             metadata = None

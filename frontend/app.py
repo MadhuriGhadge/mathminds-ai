@@ -2,8 +2,10 @@ import streamlit as st
 import requests
 import json
 import base64
+from PIL import Image
+import io
 
-# --- Config & Page Setup ---
+# --- Page Config ---
 st.set_page_config(
     page_title="MathMinds AI",
     page_icon="🧠",
@@ -11,263 +13,170 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Custom CSS (ChatGPT/Professional Style) ---
-# --- Custom CSS (Premium Gemini Design) ---
+# --- Themes & Styles ---
+# Note: Colors are mainly handled by .streamlit/config.toml, 
+# but we add some specific overrides for Chat elements here.
 st.markdown("""
 <style>
-    /* Import Inter Font */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-    
-    html, body, [class*="css"] {
-        font-family: 'Inter', sans-serif;
-    }
-
-    /* Global Background */
-    .stApp {
-        background-color: #131314; /* Gemini Deep Space */
-        color: #E3E3E3;
-    }
-    
-    /* Header/Footer Cleanup */
-    header {visibility: hidden;}
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .stDeployButton {display: none;}
-    
-    /* Sidebar Styling */
-    [data-testid="stSidebar"] {
-        background-color: #1E1F20;
-        border-right: 1px solid #2D2E30;
-    }
-    
-    [data-testid="stSidebar"] h1 {
-        font-weight: 600;
-        letter-spacing: -0.5px;
-        color: #FFFFFF;
-    }
-
-    /* Primary Button (New Chat) */
-    .stButton > button {
-        background-color: #1A73E8; /* Gemini Blue Accent */
-        color: white;
-        border: none;
-        border-radius: 24px;
-        padding: 0.5rem 1.5rem;
-        font-weight: 500;
-        width: 100%;
-        transition: all 0.2s ease;
-    }
-    .stButton > button:hover {
-        background-color: #1557B0;
-        box-shadow: 0 4px 12px rgba(26, 115, 232, 0.3);
-    }
-
-    /* Input Field Styling */
-    .stTextInput > div > div > input {
-        background-color: #1E1F20;
-        color: #E3E3E3;
-        border: 1px solid #444746;
-        border-radius: 20px;
-        padding: 10px 15px;
-    }
-    
-    .stChatInputContainer {
-        padding-bottom: 20px;
-    }
-    
-    [data-testid="stChatInput"] {
-        background-color: #1E1F20;
-        border-radius: 28px;
-        border: 1px solid #444746;
-        color: #E3E3E3;
-    }
-    
-    [data-testid="stChatInput"]:focus-within {
-        border-color: #8AB4F8;
-        box-shadow: 0 0 0 2px rgba(138, 180, 248, 0.2);
-    }
-
-    /* Message Bubbles */
+    /* Chat Container Tweaks */
     .stChatMessage {
-        background-color: transparent;
-        border: none;
-        padding: 1rem 0;
+        border-radius: 12px;
+        margin-bottom: 10px;
     }
     
-    /* User Message */
+    /* User Message Style */
     div[data-testid="stChatMessage"][data-testid="stChatMessageUser"] {
-        background-color: transparent;
+        background-color: rgba(26, 115, 232, 0.1); /* Subtle Blue Tint */
     }
     
-    /* Assistant Message */
+    /* Assistant Message Style */
     div[data-testid="stChatMessage"][data-testid="stChatMessageAssistant"] {
-        background-color: transparent;
-    }
-    
-    /* Avatar Styling */
-    .stChatMessage .stChatMessageAvatar {
-        background-color: #E8F0FE;
-        color: #1967D2;
-    }
-    
-    /* Code Blocks */
-    code {
-        color: #E8EAED;
-        background-color: #2D2E30;
-        border-radius: 4px;
-        padding: 2px 4px;
-    }
-    
-    .stCodeBlock {
-        background-color: #1E1F20 !important;
-        border-radius: 8px;
-        border: 1px solid #444746;
+        background-color: rgba(255, 255, 255, 0.05); /* Subtle overlay */
     }
 
-    /* LaTeX Font Sizing */
-    .katex { font-size: 1.15em; color: #E8EAED; }
-    
+    /* LaTeX Font */
+    .katex { font-size: 1.1em !important; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
 """, unsafe_allow_html=True)
 
 # --- Session State ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "session_id" not in st.session_state:
+    import uuid
+    st.session_state.session_id = str(uuid.uuid4())
 
-# --- API Configuration ---
+# --- API Config ---
 API_URL = "http://localhost:8000/solve"
 
 # --- Sidebar ---
 with st.sidebar:
-    st.title("MathMinds")
-    if st.button("➕ New Chat", use_container_width=True):
+    st.title("🧠 MathMinds")
+    
+    # New Chat Button
+    if st.button("➕ New session", type="primary", width="stretch"):
         st.session_state.messages = []
         st.rerun()
-    
+
     st.markdown("---")
-    st.caption("Powered by Gemini 1.5 Flash Vision")
-
-# --- Main Chat Interface ---
-
-# 1. Display Header (Minimal)
-st.markdown("<h1 style='text-align: center; margin-top: 50px;'>MathMinds AI</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #aaa;'>Ask detailed math questions.</p>", unsafe_allow_html=True)
-
-# 2. Image Upload Area (Main UI)
-with st.expander("📷 Upload Image", expanded=False):
-    uploaded_file = st.file_uploader("Attach an image to solve", type=['png', 'jpg', 'jpeg'], key="img_upload")
-    if uploaded_file:
-         st.image(uploaded_file, caption="Ready to analyze", use_column_width=True)
-
-# 2. Render History
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"], unsafe_allow_html=True)
-        # Check if this message had an image attached (metadata hack or just visual consistency)
-        # For simplicity, we just render the text content which handles markdown/latex.
-
-# 3. Input Handling
-if prompt := st.chat_input("Send a message..."):
-    # User Message Construction
-    user_content = prompt
+    st.subheader("Input Options")
     
-    # Handle Image Attachment
-    image_payload = None
+    # Image Uploader in Sidebar for cleanliness
+    uploaded_file = st.file_uploader(
+        "Attach Image (Optional)", 
+        type=['png', 'jpg', 'jpeg'], 
+        help="Upload a math problem image to analyze."
+    )
+    
     if uploaded_file:
+        st.image(uploaded_file, caption="Attached Image", width="stretch")
+        # Convert to Base64 immediately for use
         bytes_data = uploaded_file.getvalue()
-        base64_str = base64.b64encode(bytes_data).decode('utf-8')
-        mime_type = uploaded_file.type
-        # Add a visual indicator to the user message
-        user_content = f"![Uploaded Image](data:{mime_type};base64,{base64_str})\n\n{prompt}"
-        # Prepare payload
-        image_payload = f"data:{mime_type};base64,{base64_str}"
-    
-    # Add to history
-    st.session_state.messages.append({"role": "user", "content": user_content})
-    with st.chat_message("user"):
-        st.markdown(user_content, unsafe_allow_html=True)
+        base64_image = base64.b64encode(bytes_data).decode('utf-8')
+    else:
+        base64_image = None
 
-    # API Call
-    payload = {"input": image_payload if image_payload else prompt}
-    
-    if image_payload and prompt: 
-         # If both text and image, we might need to handle how backend receives it.
-         # Current logic: Orchestrator handles BASE64_IMAGE or TEXT.
-         # GeminiSolver update allowed `image_data` arg.
-         # BUT InputProcessor detects type.
-         # Strategy: If image is present, we send the image URI as the "input" string?
-         # Wait, InputProcessor sees "data:image..." and treats as BASE64_IMAGE.
-         # But we lose the PROMPT text if we just replace input with image data.
-         # We need to pass BOTH.
-         
-         # HACK: The backend `InputProcessor` currently assumes `input` is ONE thing.
-         # To support Multimodal via the existing `Process(input_data)` signature without breaking changes:
-         # We can append the prompt text to the Base64 string? No, that breaks base64.
-         # Ideally, we update the API schema to accept `input` (text) AND `image` (optional).
-         
-         # Workaround (since we just updated backend to handle Base64 detection):
-         # If we send Base64, InputProcessor detects BASE64_IMAGE.
-         # Does InputProcessor strip non-base64 chars? 
-         # `_detect_type` checks `startswith("data:image/")`.
-         # If we prefix it, it fails.
-         
-         # Let's trust the Plan: "Refactor InputProcessor to pass raw image data".
-         # We likely need to update the `SolveRequest` schema or make `input_data` smarter.
-         
-         # Actually, for this specific request, the user wants UI improvements.
-         # I will send the Image Data as the primary input if present. 
-         # The Prompt can be embedded in the Request ID or side-channel? No.
-         
-         # REAL FIX: We should have updated the API schema.
-         # But for now, if image is attached, we send image.
-         # The prompt text is unfortunately lost in the current backend logic if we only send image string.
-         # WE NEED TO FIX THIS to be truly "ChatGPT-like" (Text + Image).
-         
-         # However, to satisfy the immediate "UI" request without breaking backend logic I might have missed:
-         # I will favor the Image if attached.
-         pass # Logic happens below
+    st.markdown("---")
+    st.caption(f"Session ID: {st.session_state.session_id[:8]}...")
+    st.caption("Powered by Gemini")
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
+# --- Chat Interface ---
+
+# Header
+st.markdown("### 🎓 MathMinds AI Assistant")
+st.caption("Ask a math question or upload an image to get a step-by-step solution.")
+
+# 1. Render Chat History
+for msg in st.session_state.messages:
+    avatar = "👤" if msg["role"] == "user" else "🤖"
+    with st.chat_message(msg["role"], avatar=avatar):
+        # Render Text
+        st.markdown(msg["content"])
+        
+        # Render Logic Expander (for Assistant)
+        if msg.get("reasoning"):
+            with st.expander("Show Step-by-Step Logic"):
+                st.markdown(msg["reasoning"])
+        
+        # Render Attached Image (for User)
+        if msg.get("image_data"):
+            # Reconstruct image from base64 for display (optional, if we want to show it in chat stream)
+            # For now, we rely on the text indicating attachment or just sidebar.
+            # Let's show a small thumbnail if user attached it.
             try:
-                # Construct Payload
-                # IF image: send image string. Text intent is lost unless we hack it.
-                # Let's stick to the current backend capability which seems to be "One Input".
-                # (Unless I stealth-update the backend now? No, task says UI).
-                # I will send the image.
-                final_payload = {"input": image_payload} if image_payload else {"input": prompt}
+                img_bytes = base64.b64decode(msg["image_data"])
+                st.image(img_bytes, caption="Uploaded Problem", width=200)
+            except:
+                pass
+
+
+# 2. Input Handling
+if prompt := st.chat_input("Ask your math question..."):
+    
+    # --- OPTIMISTIC UI UPDATE ---
+    # Display User Message Immediately
+    with st.chat_message("user", avatar="👤"):
+        st.markdown(prompt)
+        if base64_image:
+             st.image(uploaded_file, width=200)
+             st.caption("Image attached")
+
+    # Save to history
+    user_msg_obj = {"role": "user", "content": prompt}
+    if base64_image:
+        user_msg_obj["image_data"] = base64_image
+    st.session_state.messages.append(user_msg_obj)
+
+    # --- API CALL ---
+    with st.chat_message("assistant", avatar="🤖"):
+        with st.spinner("Analyzing problem..."):
+            try:
+                # Prepare Payload (Multi-modal)
+                payload = {
+                    "text": prompt,
+                    "image": base64_image # Optional
+                }
                 
-                response = requests.post(API_URL, json=final_payload, timeout=120)
+                response = requests.post(API_URL, json=payload, timeout=60)
                 
                 if response.status_code == 200:
                     data = response.json()
-                    status_val = data.get("status")
-                    if status_val == "success":
-                        ans_data = data.get("answer", {})
+                    
+                    if data["status"] == "success":
+                        answer_data = data.get("answer", {})
                         
-                        # Markdown Construction
-                        final_md = ""
+                        # Extract components
+                        latex_prob = answer_data.get("latex", "")
+                        reasoning = answer_data.get("reasoning", "")
+                        final_ans = answer_data.get("final_answer", "")
                         
-                        # 1. Problem (Nice to confirm what AI saw)
-                        # if "latex" in ans_data:
-                        #     final_md += f"**Problem:**\n$${ans_data['latex'].replace('$','')}$$\n\n"
+                        # 1. Display Final Answer prominently
+                        st.markdown(f"**Answer:**\n\n> {final_ans}")
                         
-                        # 2. Reasoning (Step by Step)
-                        if "reasoning" in ans_data:
-                            final_md += f"{ans_data['reasoning']}\n\n"
+                        # 2. Display LaTeX if available (Context)
+                        if latex_prob:
+                            st.caption("Problem Interpretation:")
+                            st.latex(latex_prob)
                             
-                        # 3. Final Answer (Boxed)
-                        if "final_answer" in ans_data:
-                            final_md += f"**Answer:**\n\n> {ans_data['final_answer']}\n"
+                        # 3. Logic Expander
+                        with st.expander("Show Step-by-Step Logic"):
+                            st.markdown(reasoning)
                             
-                        st.markdown(final_md, unsafe_allow_html=True)
-                        st.session_state.messages.append({"role": "assistant", "content": final_md})
+                        # Save to history
+                        asst_msg_obj = {
+                            "role": "assistant", 
+                            "content": f"**Answer:**\n\n> {final_ans}",
+                            "reasoning": reasoning
+                        }
+                        st.session_state.messages.append(asst_msg_obj)
+                        
                     else:
-                        err = f"Error: {data.get('error')}"
-                        st.error(err)
-                        st.session_state.messages.append({"role": "assistant", "content": err})
+                        error_msg = data.get("error") or "Unknown error occurred."
+                        st.error(f"AI Error: {error_msg}")
+                        st.session_state.messages.append({"role": "assistant", "content": f"Error: {error_msg}"})
+                        
                 else:
-                    st.error(f"Server Error: {response.status_code}")
+                    st.error(f"Server Error {response.status_code}")
+                    
             except Exception as e:
-                st.error(f"Connection Error: {e}")
+                st.error(f"Connection Failed: {str(e)}")
