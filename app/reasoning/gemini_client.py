@@ -21,7 +21,7 @@ class GeminiSolver:
     Enforces structured output, cleans unicode, and handles retries/timeouts.
     """
 
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-flash-latest"):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-flash"):
         """
         Initialize the GeminiSolver.
 
@@ -175,7 +175,6 @@ class GeminiSolver:
                 # Ideally we pass mime_type, but 'image/png' works for most or we can detect.
                 # Since InputProcessor handles headers, we assume valid image bytes.
                 # types.Part maps to the SDK's Part object
-                from google.genai import types
                 image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/png")
                 contents.append(image_part)
             except Exception as e:

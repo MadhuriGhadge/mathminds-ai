@@ -38,12 +38,12 @@ class Orchestrator:
             logger.critical(f"Failed to initialize Orchestrator components: {e}")
             raise
 
-    async def process_problem(self, user_input: str, request_id: Optional[str] = None) -> Dict[str, Any]:
+    async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Orchestrates the problem solving pipeline.
 
         Pipeline:
-        1. Validate & Normalize Input
+        1. Process & Validate Input (Text + Image)
         2. Hash Input
         3. Cache/DB Lookup
         4. Solve (if needed)
@@ -52,7 +52,8 @@ class Orchestrator:
         7. Return Result
 
         Args:
-            user_input: The raw problem string from the user.
+            text: The optional problem string.
+            image: The optional image (Base64 or URL).
             request_id: Optional UUID for request tracing.
 
         Returns:
@@ -74,14 +75,21 @@ class Orchestrator:
         try:
             result["metadata"]["stage"] = "input_processing"
             logger.info("Step 1: Processing input", extra={"request_id": request_id, "step": 1})
-            processed_input = self.input_processor.process(user_input)
+            
+            # Use compound processor
+            processed_input = self.input_processor.process_compound(text_input=text, image_input=image)
+            
+            # Construct a representation for logging/storage
+            user_input_repr = text or ""
+            if image:
+                user_input_repr += " [IMAGE_ATTACHED]"
             
             if not processed_input.is_valid:
                 logger.warning(f"[{request_id}] Invalid input: {processed_input.error_message}")
                 result["error"] = processed_input.error_message
                 return result
             
-            # Input type check: We support TEXT, LATEX, and now BASE64_IMAGE/IMAGE_URL
+            # Input type check: We support TEXT, LATEX, BASE64_IMAGE, IMAGE_URL, MULTIMODAL
             # Logic is handled by InputProcessor and Solver
             pass
 
@@ -96,8 +104,21 @@ class Orchestrator:
         try:
             result["metadata"]["stage"] = "hashing"
             logger.info("Step 2: Generating hash", extra={"request_id": request_id, "step": 2})
-            # We hash the normalized content
-            problem_hash = generate_problem_hash(processed_input.cleaned_content)
+            
+            # Start with cleaned content (OCR text or user text)
+            hash_input = processed_input.cleaned_content
+            
+            # If image data is present, append its hash to ensure uniqueness
+            # This prevents different images with same OCR (or empty OCR) from colliding
+            if processed_input.metadata and "image_data" in processed_input.metadata:
+                import hashlib
+                image_data = processed_input.metadata["image_data"]
+                if image_data:
+                    # We use a fast hash of the base64 string
+                    img_hash = hashlib.md5(image_data.encode('utf-8')).hexdigest()
+                    hash_input = f"{hash_input}|image:{img_hash}"
+            
+            problem_hash = generate_problem_hash(hash_input)
             result["metadata"]["hash"] = problem_hash
         except Exception as e:
             logger.error(f"[{request_id}] Hashing failed: {e}")
@@ -175,7 +196,10 @@ class Orchestrator:
             logger.info("Step 5: Validating answer")
             is_valid, validation_errors = self.validator.validate(
                 generated_solution, 
-                is_math_problem=(processed_input.input_type == InputType.LATEX or "math" in processed_input.cleaned_content.lower()) # Simple heuristic or rely on processed_input
+                is_math_problem=(
+                    processed_input.input_type in [InputType.LATEX, InputType.BASE64_IMAGE, InputType.IMAGE_URL] 
+                    or "math" in processed_input.cleaned_content.lower()
+                ) # Simple heuristic or rely on processed_input
             )
 
             if not is_valid:
@@ -199,7 +223,7 @@ class Orchestrator:
             
             problem_data = {
                 "hash": problem_hash,
-                "original_input": user_input,
+                "original_input": user_input_repr,
                 "cleaned_content": processed_input.cleaned_content,
                 "input_type": processed_input.input_type.value,
             }
