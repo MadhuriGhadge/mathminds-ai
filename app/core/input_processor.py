@@ -98,7 +98,8 @@ class InputProcessor:
         if text_input:
             cleaned_text = self._normalize_text(text_input)
             
-            # If we also have an image, it's MULTIMODAL
+            # If we also have an image, it's MULTIMODAL.
+            # CRITICAL: We MUST preserve the text input as it provides specific context (e.g. "Solve part b")
             if image_data:
                 detected_type = InputType.MULTIMODAL
             elif detected_type == InputType.UNKNOWN:

@@ -249,13 +249,13 @@ def process_input(prompt_text, image_b64=None, display_image=None):
                         reasoning = answer_data.get("reasoning", "")
                         final_ans = answer_data.get("final_answer", "")
                         
-                        # 1. Display Final Answer prominently
-                        st.markdown(f"**Answer:**\n\n> {final_ans}")
-                        
-                        # 2. Display LaTeX if available (Context)
+                        # 1. Display LaTeX if available (Context) - High Priority
                         if latex_prob:
                             st.caption("Problem Interpretation:")
                             st.latex(latex_prob)
+
+                        # 2. Display Final Answer prominently
+                        st.markdown(f"**Answer:**\n\n> {final_ans}")
                             
                         # 3. Logic Expander
                         with st.expander("Show Step-by-Step Logic"):
@@ -274,6 +274,10 @@ def process_input(prompt_text, image_b64=None, display_image=None):
                     
             except Exception as e:
                 st.error(f"Connection Failed: {str(e)}")
+                # Retry Button
+                if st.button("🔄 Retry Request", type="primary"):
+                    process_input(prompt_text, image_b64, display_image)
+                    st.rerun()
 
 
 # 3. Input Controls (Main Area)
