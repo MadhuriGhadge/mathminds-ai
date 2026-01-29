@@ -111,10 +111,10 @@ class GeminiSolver:
             self._solve_with_timeout,
             problem_text,
             image_data,
-            timeout=30  # seconds
+            timeout=60  # seconds
         )
 
-    async def _solve_with_timeout(self, problem_text: str, image_data: Optional[str] = None, timeout: int = 30) -> Dict[str, Any]:
+    async def _solve_with_timeout(self, problem_text: str, image_data: Optional[str] = None, timeout: int = 60) -> Dict[str, Any]:
         """Solve with timeout enforcement."""
         try:
             # Wrap in timeout context
