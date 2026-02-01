@@ -1,6 +1,7 @@
 import logging
 import time
 from typing import Any, Dict, Optional
+import asyncio
 
 from app.core.input_processor import InputProcessor, InputType
 from app.memory.cache import CacheManager
@@ -9,7 +10,10 @@ from app.reasoning.gemini_client import GeminiSolver
 from app.utils.hashing import generate_problem_hash
 from app.validation.answer_checker import AnswerValidator
 from app.core.errors import ErrorCodes, ERROR_MESSAGES
-
+from app.core.router import QueryRouter, RouteType
+from app.tools.web_scraper import WebScraper
+from app.tools.symbolic_solver import SymbolicSolver
+from app.reasoning.classifier import QueryClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,12 @@ class Orchestrator:
             self.db_manager = db_manager or DatabaseManager()
             self.solver = GeminiSolver()
             self.validator = AnswerValidator()
+            
+            # Smart Routing Tools
+            self.router = QueryRouter()
+            self.web_scraper = WebScraper()
+            self.symbolic_solver = SymbolicSolver()
+            self.classifier = QueryClassifier()
         except Exception as e:
             logger.critical(f"Failed to initialize Orchestrator components: {e}")
             raise
@@ -171,18 +181,55 @@ class Orchestrator:
             # Fail open to Solver
             
         
-        # 4. Reasoning (Gemini)
+        # 4. Smart Routing & Reasoning
         try:
             result["metadata"]["stage"] = "reasoning"
-            logger.info("Step 4: Solving problem with Gemini", extra={"request_id": request_id, "step": 4})
+            logger.info("Step 4: Smart Routing & Solving", extra={"request_id": request_id, "step": 4})
             
+            # 4a. Route & Execute Tools
+            tool_context = ""
+            if not image: # Only route text queries for now, or if multimodal has text
+                 route = self.router.route(processed_input.cleaned_content)
+                 result["metadata"]["route"] = route.value
+                 
+                 if route == RouteType.WEB:
+                     logger.info("Executing Web Scraper...")
+                     
+                     # Refine with Classifier
+                     # Run in thread to avoid blocking
+                     classification = await asyncio.to_thread(self.classifier.classify, processed_input.cleaned_content)
+                     
+                     query_to_use = processed_input.cleaned_content
+                     focus = None
+                     
+                     if classification.get("requires_web_search"):
+                         queries = classification.get("search_queries", [])
+                         if queries:
+                             query_to_use = queries[0]
+                         focus = classification.get("extraction_focus")
+                         
+                     scrape_res = await self.web_scraper.scrape(query_to_use, extraction_focus=focus)
+                     if scrape_res.get("status") == "success":
+                         tool_context = f"\n\n[Web Data Context]:\n{scrape_res.get('content')}\nSource: {scrape_res.get('url')}\n"
+                         
+                 elif route == RouteType.SYMBOLIC:
+                     logger.info("Executing Symbolic Solver...")
+                     # Run in thread to avoid blocking event loop
+                     sym_res = await asyncio.to_thread(self.symbolic_solver.solve, processed_input.cleaned_content)
+                     if sym_res.get("status") == "success":
+                         tool_context = f"\n\n[Symbolic Verification]:\n{sym_res.get('content')}\n"
+
+            # 4b. Solve with Gemini
             # Extract image data if available
             image_data = None
             if processed_input.metadata and "image_data" in processed_input.metadata:
                 image_data = processed_input.metadata["image_data"]
                 
+            # Combine input with tool context
+            final_prompt = processed_input.cleaned_content + tool_context
+                
             # We pass the cleaned content (text/OCR) AND the raw image data if present
-            generated_solution = await self.solver.solve(processed_input.cleaned_content, image_data=image_data)
+            generated_solution = await self.solver.solve(final_prompt, image_data=image_data)
         except Exception as e:
             logger.error(f"[{request_id}] Solver failed: {e}")
             result["error_code"] = ErrorCodes.GEMINI_ERROR
