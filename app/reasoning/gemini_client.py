@@ -100,54 +100,62 @@ class GeminiSolver:
         retry=retry_if_exception_type(Exception),
         reraise=True
     )
-    async def solve(self, problem_text: str, image_data: Optional[str] = None) -> Dict[str, Any]:
+    async def solve(self, problem_text: str, image_data: Optional[str] = None, model_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Solves a math problem using Gemini with timeout protection.
         Args:
             problem_text: The text prompt/context.
             image_data: Optional Base64 encoded image string (without prefix).
+            model_name: Optional override for the model to use.
         """
         return await self.breaker.call(
             self._solve_with_timeout,
             problem_text,
             image_data,
+            model_name,
             timeout=60  # seconds
         )
 
-    async def _solve_with_timeout(self, problem_text: str, image_data: Optional[str] = None, timeout: int = 60) -> Dict[str, Any]:
+    async def _solve_with_timeout(self, problem_text: str, image_data: Optional[str] = None, model_name: Optional[str] = None, timeout: int = 60) -> Dict[str, Any]:
         """Solve with timeout enforcement."""
         try:
             # Wrap in timeout context
             result = await asyncio.wait_for(
-                asyncio.to_thread(self._solve_internal, problem_text, image_data),
+                asyncio.to_thread(self._solve_internal, problem_text, image_data, model_name),
                 timeout=timeout
             )
             return result
         except asyncio.TimeoutError:
             raise TimeoutError(f"Gemini API did not respond within {timeout}s")
 
-    def _solve_internal(self, problem_text: str, image_data: Optional[str] = None) -> Dict[str, Any]:
+    def _solve_internal(self, problem_text: str, image_data: Optional[str] = None, model_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Solves a math problem using Gemini, requesting structured JSON output.
 
         Args:
             problem_text: The math problem text.
             image_data: Optional Base64 image data.
+            model_name: Optional override model.
 
         Returns:
             Dict[str, Any]: Structured solution containing latex, reasoning, answer, confidence.
         """
         if not problem_text and not image_data:
              raise ValueError("Input cannot be empty.")
+        
+        # Use provided model or default
+        target_model = model_name or self.model_name
 
         prompt = f"""
-        You are a high-efficiency math solver. Output strictly valid JSON.
+        You are a high-efficiency multimodal math solver. Output strictly valid JSON.
+        
+        Strategy: "Think Aloud -> Extract -> Solve -> Verify -> Box Answer"
         
         Format:
         {{
-            "latex": "The problem statement in LaTeX",
-            "reasoning": "Explain clearly using normal sentences. Use LaTeX formulas wrapped in $...$.",
-            "final_answer": "The bare result",
+            "latex": "The exact problem statement in LaTeX",
+            "reasoning": "Step-by-step logical derivation. Use standard sentences. Wrap formulas in $...$. Explain identifying the problem type (e.g. Geometry, Algebra).",
+            "final_answer": "The bare result (boxed in LaTeX)",
             "confidence_score": 0.0-1.0
         }}
 
@@ -158,7 +166,12 @@ class GeminiSolver:
         - Do NOT use unicode math symbols.
         - Do NOT split words with spaces.
         - Do NOT insert newlines inside formulas.
-        - If an image is provided, extracting the problem from it is priority #1.
+        
+        VISUAL REASONING (if image provided):
+        1. Extract all visible text, numbers, and geometric labels.
+        2. Identify the type of problem (Handwritten Equation, Geometry Diagram, Chart/Plot).
+        3. If it's a Chart/Plot, explicitly list extracted data points before solving.
+        4. If it's Handwritten, transcribe carefully.
 
         Problem Context:
         {problem_text}
@@ -185,7 +198,7 @@ class GeminiSolver:
         try:
             # New SDK usage
             response = self.client.models.generate_content(
-                model=self.model_name,
+                model=target_model,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",

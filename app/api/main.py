@@ -176,9 +176,10 @@ async def solve_problem(
 
     try:
         result = await orchestrator.process_problem(
-            text=solve_req.text, 
+            text=solve_req.effective_text, 
             image=solve_req.image, 
-            request_id=req_id
+            request_id=req_id,
+            model_preference=solve_req.model_preference
         )
         
         # Sanitize metadata for public response
