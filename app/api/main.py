@@ -1,8 +1,17 @@
+
+import sys
+import asyncio
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 import logging
 import datetime
 from datetime import datetime
 import uuid
 from dotenv import load_dotenv
+
+
 
 # Load environment variables
 load_dotenv()

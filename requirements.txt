@@ -16,3 +16,6 @@ gunicorn
 paddlepaddle
 paddleocr
 Pillow
+playwright
+wolframalpha
+sympy
