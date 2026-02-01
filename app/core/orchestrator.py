@@ -48,7 +48,7 @@ class Orchestrator:
             logger.critical(f"Failed to initialize Orchestrator components: {e}")
             raise
 
-    async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
+    async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None, model_preference: str = "fast") -> Dict[str, Any]:
         """
         Orchestrates the problem solving pipeline.
 
@@ -65,6 +65,7 @@ class Orchestrator:
             text: The optional problem string.
             image: The optional image (Base64 or URL).
             request_id: Optional UUID for request tracing.
+            model_preference: 'fast' (Flash) or 'reasoning' (Pro).
 
         Returns:
             Dict[str, Any]: The final result including answer, metadata, and status.
@@ -77,7 +78,8 @@ class Orchestrator:
             "error_msg": None,
             "metadata": {
                 "request_id": request_id, 
-                "stage": "init"
+                "stage": "init",
+                "model_used": model_preference
             }
         }
 
@@ -228,8 +230,16 @@ class Orchestrator:
             # Combine input with tool context
             final_prompt = processed_input.cleaned_content + tool_context
                 
+            # Determine model to use
+            # Map preference 'reasoning' to a stronger model if available, else standard
+            # Ideally 'gemini-1.5-pro' or 'gemini-2.0-flash-thinking-exp' if available
+            # For now, we will map 'reasoning' to 'gemini-1.5-pro' and 'fast' to 'gemini-2.5-flash'
+            target_model = "gemini-2.5-flash"
+            if model_preference == "reasoning":
+                target_model = "gemini-1.5-pro"
+            
             # We pass the cleaned content (text/OCR) AND the raw image data if present
-            generated_solution = await self.solver.solve(final_prompt, image_data=image_data)
+            generated_solution = await self.solver.solve(final_prompt, image_data=image_data, model_name=target_model)
         except Exception as e:
             logger.error(f"[{request_id}] Solver failed: {e}")
             result["error_code"] = ErrorCodes.GEMINI_ERROR

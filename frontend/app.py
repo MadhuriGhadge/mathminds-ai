@@ -135,6 +135,15 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
+    st.subheader("Settings")
+    model_choice = st.radio(
+        "Reasoning Model",
+        ["Standard (Flash)", "Advanced (Pro)"],
+        index=0,
+        help="Use Standard for speed, Advanced for complex visual reasoning."
+    )
+    
+    st.markdown("---")
     st.subheader("History")
     
     # Active Session Rename (if exists)
@@ -230,10 +239,18 @@ def process_input(prompt_text, image_b64=None, display_image=None):
     with st.chat_message("assistant", avatar="🤖"):
         with st.spinner("Analyzing problem..."):
             try:
+                # Map UI choice to API value
+                pref_map = {
+                    "Standard (Flash)": "fast",
+                    "Advanced (Pro)": "reasoning"
+                }
+                model_pref = pref_map.get(model_choice, "fast")
+
                 # Prepare Payload (Multi-modal)
                 payload = {
                     "text": prompt_text,
-                    "image": image_b64 # Optional
+                    "image": image_b64, # Optional
+                    "model_preference": model_pref
                 }
                 
                 response = requests.post(API_URL, json=payload, timeout=60)
