@@ -13,7 +13,9 @@ from app.core.errors import ErrorCodes, ERROR_MESSAGES
 from app.core.router import QueryRouter, RouteType
 from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
+from app.tools.symbolic_solver import SymbolicSolver
 from app.reasoning.classifier import QueryClassifier
+from app.tools.vision_analyzer import VisionAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,13 @@ class Orchestrator:
             self.router = QueryRouter()
             self.web_scraper = WebScraper()
             self.symbolic_solver = SymbolicSolver()
+            self.router = QueryRouter()
+            self.web_scraper = WebScraper()
+            self.symbolic_solver = SymbolicSolver()
             self.classifier = QueryClassifier()
+            # Defer loading to avoid startup lag if model not present, but for now init here.
+            # Make sure it's non-blocking or simple load.
+            self.vision_analyzer = VisionAnalyzer()
         except Exception as e:
             logger.critical(f"Failed to initialize Orchestrator components: {e}")
             raise
@@ -229,6 +237,35 @@ class Orchestrator:
                 
             # Combine input with tool context
             final_prompt = processed_input.cleaned_content + tool_context
+
+            # Mathematical Vision (YOLO)
+            if image and self.vision_analyzer:
+                 # Cleaned content is the text query part if multimodal
+                 # We assume we have the raw base64 in processed_input.metadata if it was processed
+                 image_for_vision = None
+                 if processed_input.metadata and "image_data" in processed_input.metadata:
+                     image_for_vision = processed_input.metadata["image_data"]
+                 
+                 if image_for_vision:
+                    logger.info("Executing Mathematical Vision (YOLO)...")
+                    vision_res = self.vision_analyzer.analyze(image_for_vision, processed_input.cleaned_content)
+                    
+                    if vision_res.get("status") == "success" and vision_res.get("vision_mode") == "quantitative":
+                        quant = vision_res.get("quantitative_analysis", {})
+                        objects = quant.get("objects", {})
+                        
+                        if objects:
+                            # format as a clear list
+                            desc = "YOLO Quantitative Analysis (High Precision):\n"
+                            desc += f"Total Objects Detected: {quant.get('total_objects', 0)}\n"
+                            desc += f"Average Confidence: {quant.get('avg_confidence', 0.0)}\n"
+                            desc += "Detailed Counts (Color + Type):\n"
+                            for obj_type, count in objects.items():
+                                desc += f"- {obj_type}: {count}\n"
+                            
+                            final_prompt += f"\n\n[{desc}]\n"
+                        else:
+                             final_prompt += "\n\n[YOLO Analysis: No specific objects detected for counting]\n"
 
             # Inject History if session_id is present
             if session_id:
