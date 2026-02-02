@@ -1,7 +1,7 @@
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import pymongo
 from pymongo import IndexModel, ASCENDING
@@ -132,4 +132,85 @@ class DatabaseManager:
             return True
         except PyMongoError as e:
             logger.error(f"Failed to save problem: {e}")
+            return False
+
+    def create_session(self, session_id: str, title: str = "New Chat") -> bool:
+        """
+        Initialize a new chat session.
+        """
+        if self.db is None:
+            return False
+        try:
+            self.db["chat_sessions"].update_one(
+                {"session_id": session_id},
+                {
+                    "$setOnInsert": {
+                        "session_id": session_id,
+                        "title": title,
+                        "created_at": datetime.now(timezone.utc),
+                        "messages": []
+                    }
+                },
+                upsert=True
+            )
+            return True
+        except PyMongoError as e:
+            logger.error(f"Failed to create session {session_id}: {e}")
+            return False
+
+    def get_chat_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Retrieve recent messages for a session.
+        """
+        if self.db is None:
+            return []
+        try:
+            # Get the session document with sliced messages
+            doc = self.db["chat_sessions"].find_one(
+                {"session_id": session_id},
+                {"messages": {"$slice": -limit}}
+            )
+            if doc and "messages" in doc:
+                return doc["messages"]
+            return []
+        except PyMongoError as e:
+            logger.error(f"Failed to get history for {session_id}: {e}")
+            return []
+
+    def save_chat_message(self, session_id: str, role: str, content: str) -> bool:
+        """
+        Append a message to the session history.
+        Also updates the session title if it's the first user message.
+        """
+        if self.db is None:
+            return False
+        try:
+            # logic to update title if it's currently "New Chat" and this is a user message
+            if role == "user":
+                session = self.db["chat_sessions"].find_one({"session_id": session_id})
+                if session and session.get("title") == "New Chat":
+                    # Generate title from content (truncate)
+                    new_title = content[:50] + "..." if len(content) > 50 else content
+                    self.db["chat_sessions"].update_one(
+                        {"session_id": session_id},
+                        {"$set": {"title": new_title}}
+                    )
+
+            # Push the new message
+            self.db["chat_sessions"].update_one(
+                {"session_id": session_id},
+                {
+                    "$push": {
+                        "messages": {
+                            "role": role, 
+                            "content": content, 
+                            "timestamp": datetime.now(timezone.utc)
+                        }
+                    }
+                },
+                upsert=True
+            )
+            return True
+        except PyMongoError as e:
+            logger.error(f"Failed to save message to {session_id}: {e}")
             return False

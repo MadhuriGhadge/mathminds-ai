@@ -179,7 +179,8 @@ async def solve_problem(
             text=solve_req.effective_text, 
             image=solve_req.image, 
             request_id=req_id,
-            model_preference=solve_req.model_preference
+            model_preference=solve_req.model_preference,
+            session_id=solve_req.session_id
         )
         
         # Sanitize metadata for public response

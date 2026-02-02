@@ -48,7 +48,7 @@ class Orchestrator:
             logger.critical(f"Failed to initialize Orchestrator components: {e}")
             raise
 
-    async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None, model_preference: str = "fast") -> Dict[str, Any]:
+    async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None, model_preference: str = "fast", session_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Orchestrates the problem solving pipeline.
 
@@ -229,6 +229,17 @@ class Orchestrator:
                 
             # Combine input with tool context
             final_prompt = processed_input.cleaned_content + tool_context
+
+            # Inject History if session_id is present
+            if session_id:
+                history = self.db_manager.get_chat_history(session_id, limit=5)
+                if history:
+                    history_context = "\n\n[Chat History]:\n"
+                    for msg in history:
+                         role = msg.get('role', 'unknown')
+                         content = msg.get('content', '')
+                         history_context += f"{role}: {content}\n"
+                    final_prompt = history_context + "\n[Current Request]: " + final_prompt
                 
             # Determine model to use
             # Map preference 'reasoning' to a stronger model if available, else standard
@@ -287,6 +298,19 @@ class Orchestrator:
             
             # Save to DB
             self.db_manager.save_problem(problem_data, generated_solution)
+            
+            # Save to Session History
+            if session_id:
+                # Save User Query
+                self.db_manager.save_chat_message(session_id, "user", processed_input.cleaned_content)
+                # Save AI Response (extract text from solution structure)
+                # generated_solution might be a dict, need to extract text.
+                # Assuming generated_solution has a 'text' or we dump it.
+                # GeminiSolver returns Dict. Let's assume it has 'content' or 'text'.
+                # Checking GeminiSolver (not viewed, but standard is dict).
+                # If it's the standard format: {"text": "...", ...}
+                ai_text = generated_solution.get("text") or str(generated_solution)
+                self.db_manager.save_chat_message(session_id, "model", ai_text)
             
             # Save to Cache
             self.cache_manager.set_cached_answer(problem_hash, generated_solution)

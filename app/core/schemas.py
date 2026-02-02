@@ -8,6 +8,7 @@ class SolveRequest(BaseModel):
     """
     text: Optional[str] = Field(None, description="The math problem text or specific question about the image.")
     image: Optional[str] = Field(None, description="Base64 encoded image string or Image URL.")
+    session_id: Optional[str] = Field(None, description="Session ID for maintaining chat context.")
     model_preference: Optional[str] = Field("fast", description="Model preference: 'fast' or 'reasoning'.")
     input: Optional[str] = Field(None, description="Legacy field for backward compatibility.", deprecated=True)
 
