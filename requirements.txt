@@ -19,3 +19,4 @@ Pillow
 playwright
 wolframalpha
 sympy
+ultralytics
