@@ -1,0 +1,89 @@
+import os
+import redis
+import pymongo
+from functools import lru_cache
+from typing import Optional
+import logging
+
+from app.core.orchestrator import Orchestrator
+from app.memory.cache import CacheManager
+from app.memory.database import DatabaseManager
+
+logger = logging.getLogger(__name__)
+
+# --- Connection Pools (Global Singletons) ---
+# We use global variables instead of lru_cache for connections so we can reset them if needed
+_redis_pool: Optional[redis.ConnectionPool] = None
+_mongo_client: Optional[pymongo.MongoClient] = None
+
+def get_redis_pool() -> redis.ConnectionPool:
+    """
+    Creates a shared Redis connection pool.
+    Not cached with lru_cache to avoid caching failed states or stale configs forever.
+    Uses a global singleton pattern with lazy validation.
+    """
+    global _redis_pool
+    if _redis_pool:
+        return _redis_pool
+
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        if not redis_url:
+            raise ValueError("REDIS_URL is not set.")
+
+        pool = redis.ConnectionPool.from_url(redis_url, decode_responses=True)
+        
+        # Optional: Fail fast check
+        # r = redis.Redis(connection_pool=pool)
+        # r.ping()
+        
+        _redis_pool = pool
+        logger.info(f"Initialized Redis Pool: {redis_url}")
+        return _redis_pool
+    except Exception as e:
+        logger.error(f"Failed to create Redis connection pool: {e}")
+        raise
+
+def get_mongo_client() -> pymongo.MongoClient:
+    """
+    Creates a shared MongoDB client.
+    """
+    global _mongo_client
+    if _mongo_client:
+        return _mongo_client
+
+    try:
+        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+        client = pymongo.MongoClient(
+            mongo_uri, 
+            serverSelectionTimeoutMS=5000,
+            minPoolSize=1,
+            maxPoolSize=50
+        )
+        _mongo_client = client
+        logger.info("Initialized MongoDB Client")
+        return _mongo_client
+    except Exception as e:
+        logger.error(f"Failed to create Mongo client: {e}")
+        raise
+
+# --- Component Factories ---
+
+@lru_cache()
+def get_cache_manager() -> CacheManager:
+    return CacheManager(connection_pool=get_redis_pool())
+
+@lru_cache()
+def get_db_manager() -> DatabaseManager:
+    return DatabaseManager(client=get_mongo_client())
+
+@lru_cache()
+def get_orchestrator() -> Orchestrator:
+    """
+    Dependency provider for the Orchestrator singleton.
+    Injects shared managers.
+    """
+    return Orchestrator(
+        cache_manager=get_cache_manager(),
+        db_manager=get_db_manager()
+    )
