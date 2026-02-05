@@ -2,81 +2,76 @@ import logging
 import asyncio
 from typing import Optional, Dict, Any
 from playwright.sync_api import sync_playwright
-from concurrent.futures import ProcessPoolExecutor
 import functools
+from bs4 import BeautifulSoup
+from fake_useragent import UserAgent
+from concurrent.futures import ProcessPoolExecutor
 
 logger = logging.getLogger(__name__)
 
 def run_playwright_sync(query: str, headless: bool, extraction_focus: Optional[str] = None) -> Dict[str, Any]:
     """
-    Standalone function to run Playwright in a separate process.
-    Must be top-level for pickling.
+    Scrapes a webpage associated with the query using Playwright with anti-detection measures.
+    Uses BeautifulSoup for robust text extraction.
     """
+    ua = UserAgent()
+    user_agent = ua.random
+    
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=headless)
-            # Use a standard user agent to avoid immediate blocking
             context = browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                user_agent=user_agent,
+                viewport={"width": 1280, "height": 720}
             )
             page = context.new_page()
             
-            try:
-                # Targeted Scraping Logic
-                q_lower = query.lower()
-                if query.startswith("http"):
-                     search_url = query
-                elif "gold" in q_lower and ("rate" in q_lower or "price" in q_lower):
-                     # India-specific context given user's query history, but goodreturns is generally accessible
-                     search_url = "https://www.goodreturns.in/gold-rates/"
-                elif "weather" in q_lower:
-                     # wttr.in is perfect for text-based weather
-                     # Extract location if possible, otherwise default (IP based) or specific
-                     # Simple heuristic: remove 'weather', 'in', 'at'
-                     location = q_lower.replace("weather", "").replace(" in ", "").replace(" at ", "").strip()
-                     search_url = f"https://wttr.in/{location}?format=3" if location else "https://wttr.in/?format=3"
-                elif "stock" in q_lower or "share" in q_lower:
-                     # Yahoo Finance Search
-                     search_url = f"https://finance.yahoo.com/lookup?s={query}"
-                else:
-                     # Fallback to DuckDuckGo (HTML version for easier scraping), or Google if preferred
-                     search_url = f"https://html.duckduckgo.com/html/?q={query}"
-                
-                logger.info(f"Attempting to scrape: {search_url}")
-                page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
+            # Determine URL Logic
+            q_lower = query.lower()
+            if query.startswith("http"):
+                 search_url = query
+            elif "gold" in q_lower and ("rate" in q_lower or "price" in q_lower):
+                 search_url = "https://www.goodreturns.in/gold-rates/"
+            elif "weather" in q_lower:
+                 # Clean location logic
+                 location = q_lower.replace("weather", "").replace(" in ", "").replace(" at ", "").strip()
+                 search_url = f"https://wttr.in/{location}?format=3" if location else "https://wttr.in/?format=3"
+            elif "stock" in q_lower or "share" in q_lower:
+                 search_url = f"https://finance.yahoo.com/lookup?s={query}"
+            else:
+                 search_url = f"https://html.duckduckgo.com/html/?q={query}"
             
+            logger.info(f"Scraping: {search_url} | UA: {user_agent}")
+            
+            try:
+                page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
             except Exception as e:
-                logger.warning(f"Primary search failed for {query}: {e}. Falling back to DuckDuckGo.")
+                logger.warning(f"Primary nav failed: {e}. Fallback to DDG.")
                 search_url = f"https://html.duckduckgo.com/html/?q={query}"
                 page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
             
-            # Extract main content
-            content = page.inner_text("body")
+            # Content Extraction via BeautifulSoup
+            html_content = page.content()
+            soup = BeautifulSoup(html_content, "html.parser")
+            
+            # Remove junk elements
+            for script in soup(["script", "style", "nav", "footer", "header", "noscript", "svg"]):
+                script.decompose()
+
+            # Get clean text
+            text = soup.get_text(separator="\n", strip=True)
             
             final_content = ""
-            
             if extraction_focus:
-                # Targeted Extraction
-                # Find all occurrences of the focus keyword (case-insensitive)
-                import re
-                # Escape the focus term just in case
-                pattern = re.compile(re.escape(extraction_focus), re.IGNORECASE)
-                matches = list(pattern.finditer(content))
-                
-                if matches:
-                    chunks = []
-                    for m in matches[:5]: # limit to top 5 matches
-                        start = max(0, m.start() - 300)
-                        end = min(len(content), m.end() + 300)
-                        chunk = content[start:end].replace("\n", " ")
-                        chunks.append(f"...{chunk}...")
-                    final_content = "\n\n".join(chunks)
+                # Basic targeted extraction (could be improved with regex or embedding search)
+                lines = text.split("\n")
+                relevant_lines = [line for line in lines if extraction_focus.lower() in line.lower()]
+                if relevant_lines:
+                    final_content = "\n".join(relevant_lines[:20]) # Limit relevant lines
                 else:
-                    # Fallback if focus not found
-                    final_content = content[:2000] + "\n[Note: Extraction focus not found in top content]"
+                    final_content = text[:2000] + "\n[Note: Focus term not found]"
             else:
-                 # Basic cleaning - top 5000 chars
-                final_content = content[:5000]
+                 final_content = text[:5000]
             
             browser.close()
             
@@ -88,6 +83,7 @@ def run_playwright_sync(query: str, headless: bool, extraction_focus: Optional[s
             }
 
     except Exception as e:
+        logger.error(f"Scraping error: {e}")
         return {
             "source": "web_scraper",
             "error": str(e),

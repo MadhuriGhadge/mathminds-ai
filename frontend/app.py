@@ -5,8 +5,13 @@ import base64
 from PIL import Image
 import io
 import os
+import uuid
+import numpy as np
+from streamlit_drawable_canvas import st_canvas
 
-# --- Page Config ---
+# ====================================================
+# Page Config
+# ====================================================
 st.set_page_config(
     page_title="MathMinds AI",
     page_icon="🧠",
@@ -14,331 +19,349 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Themes & Styles ---
-# Note: Colors are mainly handled by .streamlit/config.toml, 
-# but we add some specific overrides for Chat elements here.
+# ====================================================
+# Styling
+# ====================================================
 st.markdown("""
 <style>
-    /* Chat Container Tweaks */
-    .stChatMessage {
-        border-radius: 12px;
-        margin-bottom: 10px;
-    }
-    
-    /* User Message Style */
-    div[data-testid="stChatMessage"][data-testid="stChatMessageUser"] {
-        background-color: rgba(26, 115, 232, 0.1); /* Subtle Blue Tint */
-    }
-    
-    /* Assistant Message Style */
-    div[data-testid="stChatMessage"][data-testid="stChatMessageAssistant"] {
-        background-color: rgba(255, 255, 255, 0.05); /* Subtle overlay */
-    }
-
-    /* LaTeX Font */
-    .katex { font-size: 1.1em !important; }
+div[data-testid="stChatMessageUser"] {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 18px 18px 4px 18px;
+    padding: 12px 16px;
+    margin: 8px 0;
+}
+div[data-testid="stChatMessageAssistant"] {
+    background: rgba(255,255,255,0.05);
+    border-left: 3px solid #667eea;
+    border-radius: 18px;
+    padding: 12px 16px;
+    margin: 8px 0;
+}
+.katex { font-size: 1.3em !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- History Management ---
+# ====================================================
+# Constants
+# ====================================================
+API_URL = "http://localhost:8000/solve"
 HISTORY_FILE = "chat_history.json"
 
+# ====================================================
+# Utils
+# ====================================================
 def load_history():
     if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            # If error (e.g. empty file), return empty
-            return {}
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
     return {}
 
-def save_history(sessions):
-    try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(sessions, f, indent=2)
-    except Exception as e:
-        print(f"Error saving history: {e}")
+def save_history(data):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
-# --- Session Initialization ---
+# ====================================================
+# Session State (IMPORTANT PART)
+# ====================================================
 if "chat_sessions" not in st.session_state:
     st.session_state.chat_sessions = load_history()
 
 if "active_session_id" not in st.session_state:
-    # If sessions exist, pick the first one (or ideally latest)
-    if st.session_state.chat_sessions:
-        # Sort by creation or modification if we had timestamps, for now just keys
-        st.session_state.active_session_id = list(st.session_state.chat_sessions.keys())[0]
-    else:
-        # Create default first session
-        import uuid
-        new_id = str(uuid.uuid4())
-        st.session_state.chat_sessions[new_id] = {"title": "New Chat", "messages": []}
-        st.session_state.active_session_id = new_id
-        save_history(st.session_state.chat_sessions)
-
-if "session_id" not in st.session_state:
-    # Legacy fallback, sync with active
-    st.session_state.session_id = st.session_state.active_session_id
-
-# Helper to get current messages
-def get_current_messages():
-    return st.session_state.chat_sessions[st.session_state.active_session_id]["messages"]
-
-# Helper to add message to current session
-def add_message(role, content, **kwargs):
-    session = st.session_state.chat_sessions[st.session_state.active_session_id]
-    msg_obj = {"role": role, "content": content, **kwargs}
-    session["messages"].append(msg_obj)
-    
-    # Update title if it's the first user message and title is generic
-    if role == "user" and session["title"] == "New Chat":
-        # simple truncation for title
-        session["title"] = content[:30] + "..." if len(content) > 30 else content
-        
+    sid = str(uuid.uuid4())
+    st.session_state.chat_sessions[sid] = {"title": "New Chat", "messages": []}
+    st.session_state.active_session_id = sid
     save_history(st.session_state.chat_sessions)
 
-def delete_session(session_id):
-    if session_id in st.session_state.chat_sessions:
-        del st.session_state.chat_sessions[session_id]
-        save_history(st.session_state.chat_sessions)
-        
-        # If we deleted the active session, switch to another
-        if session_id == st.session_state.active_session_id:
-            # Pick first available, or create new if empty
-            if st.session_state.chat_sessions:
-                st.session_state.active_session_id = list(st.session_state.chat_sessions.keys())[0]
-            else:
-                # Create default first session
-                import uuid
-                new_id = str(uuid.uuid4())
-                st.session_state.chat_sessions[new_id] = {"title": "New Chat", "messages": []}
-                st.session_state.active_session_id = new_id
-                save_history(st.session_state.chat_sessions)
-        
-        st.rerun()
+# 🔒 STABLE CANVAS KEY (THIS FIXES YOUR BUG)
+if "canvas_key" not in st.session_state:
+    st.session_state.canvas_key = "main_canvas"
 
-# --- API Config ---
-API_URL = "http://localhost:8000/solve"
+if "show_canvas" not in st.session_state:
+    st.session_state.show_canvas = False
 
-# --- Sidebar ---
+# ====================================================
+# Helpers
+# ====================================================
+def messages():
+    return st.session_state.chat_sessions[st.session_state.active_session_id]["messages"]
+
+def add_message(role, content, **extra):
+    msg = {"role": role, "content": content}
+    msg.update(extra)
+    st.session_state.chat_sessions[st.session_state.active_session_id]["messages"].append(msg)
+    save_history(st.session_state.chat_sessions)
+
+def clear_canvas():
+    # ONLY time we change key
+    st.session_state.canvas_key = f"canvas_{uuid.uuid4()}"
+
+def toggle_canvas_preview():
+    st.session_state.show_canvas = not st.session_state.show_canvas
+
+# ====================================================
+# Sidebar
+# ====================================================
 with st.sidebar:
-    st.title("🧠 MathMinds")
-    
-    # New Chat Button
-    if st.button("➕ New session", type="primary", use_container_width=True):
-        import uuid
-        new_id = str(uuid.uuid4())
-        st.session_state.chat_sessions[new_id] = {"title": "New Chat", "messages": []}
-        st.session_state.active_session_id = new_id
+    st.title("🧠 MathMinds AI")
+
+    if st.button("➕ New Chat", use_container_width=True):
+        sid = str(uuid.uuid4())
+        st.session_state.chat_sessions[sid] = {"title": "New Chat", "messages": []}
+        st.session_state.active_session_id = sid
         save_history(st.session_state.chat_sessions)
         st.rerun()
 
-    st.markdown("---")
-    st.subheader("Settings")
-    model_choice = st.radio(
-        "Reasoning Model",
-        ["Standard (Flash)", "Advanced (Pro)"],
-        index=0,
-        help="Use Standard for speed, Advanced for complex visual reasoning."
-    )
+    st.divider()
+    model_choice = st.radio("Model", ["Standard (Flash)", "Advanced (Pro)"])
+
+    # --- State Init ---
+    if "deleted_session" not in st.session_state:
+        st.session_state.deleted_session = None
+
+    # --- Search ---
+    search_query = st.text_input("🔍 Search chats", placeholder="Type to filter...", label_visibility="collapsed")
     
-    st.markdown("---")
+    # --- Undo Logic ---
+    if st.session_state.deleted_session:
+        col_undo, _ = st.columns([0.8, 0.2])
+        with col_undo:
+            if st.button("↩️ Undo Delete", type="secondary", use_container_width=True):
+                # Restore
+                deleted = st.session_state.deleted_session
+                st.session_state.chat_sessions[deleted["id"]] = deleted["data"]
+                st.session_state.active_session_id = deleted["id"]
+                st.session_state.deleted_session = None
+                save_history(st.session_state.chat_sessions)
+                st.toast("Chat restored! 🎉")
+                st.rerun()
+
+    st.divider()
+    
+    # --- Sorting & Filtering ---
+    # 1. Filter
+    all_sessions = []
+    for sid, s in st.session_state.chat_sessions.items():
+        # Default pinned to False if missing
+        if "pinned" not in s: 
+            s["pinned"] = False
+            
+        if not search_query or (search_query.lower() in s["title"].lower()):
+            all_sessions.append((sid, s))
+    
+    # 2. Sort: Pinned first, then by insertion order (reversed)
+    # Python dicts preserve insertion order (lifo for reverse)
+    # We want pinned items at top, staying in their relative order, then unpinned.
+    # Actually, simplest is two lists.
+    pinned_sessions = [x for x in all_sessions if x[1]["pinned"]]
+    regular_sessions = [x for x in all_sessions if not x[1]["pinned"]]
+    
+    # Reverse regular so new is top (if we assume dict keys are chronologically increasing or insertion order)
+    # Since we are iterating dict items, it's insertion order.
+    regular_sessions = regular_sessions[::-1] 
+    pinned_sessions = pinned_sessions[::-1] # Newest pinned top too
+    
+    sorted_display = pinned_sessions + regular_sessions
+
     st.subheader("History")
-    
-    # Active Session Rename (if exists)
-    active_id = st.session_state.active_session_id
-    if active_id in st.session_state.chat_sessions:
-        curr_title = st.session_state.chat_sessions[active_id].get("title", "New Chat")
-        new_title = st.text_input("Current Title", value=curr_title, key=f"rename_{active_id}")
-        if new_title != curr_title:
-            st.session_state.chat_sessions[active_id]["title"] = new_title
-            save_history(st.session_state.chat_sessions)
-            st.rerun()
-    
-    # List previous sessions
-    session_ids = list(st.session_state.chat_sessions.keys())[::-1]
-    
-    for sid in session_ids:
-        session = st.session_state.chat_sessions[sid]
-        title = session.get("title", "New Chat")
+
+    for sid, s in sorted_display:
+        is_active = (sid == st.session_state.active_session_id)
         
-        col1, col2 = st.columns([0.85, 0.15])
-        
-        with col1:
-             # Highlight active
-            if sid == st.session_state.active_session_id:
-                st.button(f"👉 {title}", key=f"btn_{sid}", disabled=True, use_container_width=True)
-            else:
-                if st.button(title, key=f"btn_{sid}", use_container_width=True):
-                    st.session_state.active_session_id = sid
+        # --- Active Session Rendering ---
+        if is_active:
+            # Inline Rename
+            with st.container():
+                col_mark, col_input = st.columns([0.15, 0.85])
+                with col_mark:
+                    st.write("👉")
+                with col_input:
+                    new_title = st.text_input(
+                        "Rename", 
+                        value=s["title"], 
+                        key=f"rename_{sid}", 
+                        label_visibility="collapsed"
+                    )
+                    if new_title != s["title"]:
+                        st.session_state.chat_sessions[sid]["title"] = new_title
+                        save_history(st.session_state.chat_sessions)
+                        st.rerun()
+            
+            # Action Buttons Row
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                # Pin Toggle
+                pin_icon = "📍" if s["pinned"] else "📌"
+                if st.button(pin_icon, key=f"pin_{sid}", help="Pin/Unpin"):
+                    st.session_state.chat_sessions[sid]["pinned"] = not st.session_state.chat_sessions[sid]["pinned"]
+                    save_history(st.session_state.chat_sessions)
                     st.rerun()
-        
-        with col2:
-            if st.button("🗑️", key=f"del_{sid}", help="Delete Session"):
-                delete_session(sid)
+            with c2:
+                # Delete Popover
+                with st.popover("🗑️", help="Delete"):
+                    st.write("Confirm delete?")
+                    if st.button("Yes, Delete", key=f"confirm_del_{sid}"):
+                        # Save for undo
+                        st.session_state.deleted_session = {"id": sid, "data": st.session_state.chat_sessions[sid]}
+                        
+                        # Delete
+                        del st.session_state.chat_sessions[sid]
+                        
+                        # Switch active
+                        if st.session_state.chat_sessions:
+                            st.session_state.active_session_id = list(st.session_state.chat_sessions.keys())[-1]
+                        else:
+                            # Create new if clean slate
+                            new_id = str(uuid.uuid4())
+                            st.session_state.chat_sessions[new_id] = {"title": "New Chat", "messages": []}
+                            st.session_state.active_session_id = new_id
+                        
+                        save_history(st.session_state.chat_sessions)
+                        st.toast("Chat deleted. Undo available!")
+                        st.rerun()
 
-    st.markdown("---")
-    st.caption(f"Active ID: {st.session_state.active_session_id[:8]}...")
-    st.caption("Powered by Gemini")
+        # --- Inactive Session Rendering ---
+        else:
+            name_display = f"{'📌 ' if s['pinned'] else ''}{s['title']}"
+            if st.button(name_display, key=f"btn_{sid}", use_container_width=True):
+                st.session_state.active_session_id = sid
+                st.rerun()
 
-# --- Chat Interface ---
 
-# Header
+# ====================================================
+# Main UI
+# ====================================================
 st.markdown("### 🎓 MathMinds AI")
-st.caption("Ask a math question or upload an image to get a step-by-step solution.")
+st.caption("Ask, upload, or draw a math problem")
 
-# 1. Render Chat History for Active Session
-current_messages = get_current_messages()
+# ====================================================
+# Render Chat
+# ====================================================
+for m in messages():
+    avatar = "👤" if m["role"] == "user" else "🤖"
+    with st.chat_message(m["role"], avatar=avatar):
+        st.markdown(m["content"])
+        if m.get("image_data"):
+            st.image(base64.b64decode(m["image_data"]), width=200)
+        if m.get("reasoning"):
+            with st.expander("Steps"):
+                st.markdown(m["reasoning"])
 
-for msg in current_messages:
-    avatar = "👤" if msg["role"] == "user" else "🤖"
-    with st.chat_message(msg["role"], avatar=avatar):
-        # Render Text
-        st.markdown(msg["content"])
-        
-        # Render Logic Expander (for Assistant)
-        if msg.get("reasoning"):
-            with st.expander("Show Step-by-Step Logic"):
-                st.markdown(msg["reasoning"])
-        
-        # Render Attached Image (for User)
-        if msg.get("image_data"):
-            try:
-                img_bytes = base64.b64decode(msg["image_data"])
-                st.image(img_bytes, caption="Uploaded Problem", width=200)
-            except:
-                pass
-
-
-# 2. Input Handling Logic - Reused for both Text and Image-only flows
-def process_input(prompt_text, image_b64=None, display_image=None):
-    """
-    Handles the UI and API logic for a new user message.
-    """
-    if not prompt_text and not image_b64:
-        return
-
-    # --- OPTIMISTIC UI UPDATE ---
-    # Display User Message Immediately
+# ====================================================
+# Input Processing
+# ====================================================
+def process_input(text, image_b64=None, preview=None):
     with st.chat_message("user", avatar="👤"):
-        if prompt_text:
-            st.markdown(prompt_text)
-        if display_image:
-             st.image(display_image, width=200)
-             st.caption("Image attached")
+        if text:
+            st.markdown(text)
+        if preview:
+            st.image(preview, width=200)
 
-    # Save to history via helper
-    msg_kwargs = {}
-    if image_b64:
-        msg_kwargs["image_data"] = image_b64
-    add_message("user", prompt_text or "Analyze this image.", **msg_kwargs)
+    add_message("user", text or "Analyze image", image_data=image_b64)
 
-
-    # --- API CALL ---
     with st.chat_message("assistant", avatar="🤖"):
-        with st.spinner("Analyzing problem..."):
+        with st.spinner("Thinking..."):
+            payload = {
+                "text": text,
+                "image": image_b64,
+                "model_preference": "reasoning" if "Advanced" in model_choice else "fast"
+            }
             try:
-                # Map UI choice to API value
-                pref_map = {
-                    "Standard (Flash)": "fast",
-                    "Advanced (Pro)": "reasoning"
-                }
-                model_pref = pref_map.get(model_choice, "fast")
+                r = requests.post(API_URL, json=payload, timeout=60)
+                data = r.json()
 
-                # Prepare Payload (Multi-modal)
-                payload = {
-                    "text": prompt_text,
-                    "image": image_b64, # Optional
-                    "model_preference": model_pref
-                }
-                
-                response = requests.post(API_URL, json=payload, timeout=60)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    if data["status"] == "success":
-                        answer_data = data.get("answer", {})
-                        
-                        # Extract components
-                        latex_prob = answer_data.get("latex", "")
-                        reasoning = answer_data.get("reasoning", "")
-                        final_ans = answer_data.get("final_answer", "")
-                        
-                        # 1. Display LaTeX if available (Context) - High Priority
-                        if latex_prob:
-                            st.caption("Problem Interpretation:")
-                            st.latex(latex_prob)
+                if data["status"] != "success":
+                    st.error(data.get("error", "Error"))
+                    return
 
-                        # 2. Display Final Answer prominently
-                        st.markdown(f"**Answer:**\n\n> {final_ans}")
-                            
-                        # 3. Logic Expander
-                        with st.expander("Show Step-by-Step Logic"):
-                            st.markdown(reasoning)
-                            
-                        # Save to history via helper
-                        add_message("assistant", f"**Answer:**\n\n> {final_ans}", reasoning=reasoning)
-                        
-                    else:
-                        error_msg = data.get("error") or "Unknown error occurred."
-                        st.error(f"AI Error: {error_msg}")
-                        add_message("assistant", f"Error: {error_msg}")
-                        
-                else:
-                    st.error(f"Server Error {response.status_code}")
-                    
+                ans = data["answer"]
+                if ans.get("latex"):
+                    st.latex(ans["latex"])
+
+                st.markdown(f"**Answer:**\n\n> {ans['final_answer']}")
+
+                with st.expander("Steps"):
+                    st.markdown(ans.get("reasoning", ""))
+
+                add_message(
+                    "assistant",
+                    f"**Answer:**\n\n> {ans['final_answer']}",
+                    reasoning=ans.get("reasoning", "")
+                )
             except Exception as e:
-                st.error(f"Connection Failed: {str(e)}")
-                # Retry Button
-                if st.button("🔄 Retry Request", type="primary"):
-                    process_input(prompt_text, image_b64, display_image)
-                    st.rerun()
+                st.error(f"Error: {e}")
+                add_message("assistant", f"Error: {e}")
 
+# ====================================================
+# Tabs
+# ====================================================
+tab_upload, tab_draw = st.tabs(["📤 Upload", "✏️ Draw"])
 
-# 3. Input Controls (Main Area)
-# Place Image Uploader in an expander nicely above input
-with st.expander("📎 Attach Image", expanded=False):
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        uploaded_file = st.file_uploader(
-            "Upload math problem", 
-            type=['png', 'jpg', 'jpeg'], 
-            label_visibility="collapsed"
+# ---------------- Upload ----------------
+with tab_upload:
+    uploaded = st.file_uploader("Upload image", type=["png", "jpg", "jpeg"])
+    if uploaded and st.button("✨ Analyze Upload", use_container_width=True):
+        b64 = base64.b64encode(uploaded.getvalue()).decode()
+        process_input("Solve this image problem", b64, uploaded)
+        st.rerun()
+
+# ---------------- Draw ----------------
+with tab_draw:
+    c1, c2, c3, c4, c5 = st.columns(5)
+
+    with c1:
+        mode = st.selectbox("Tool", ["freedraw", "line", "rect", "circle", "transform"])
+    with c2:
+        width = st.slider("Brush", 1, 25, 6)
+    with c3:
+        color = st.color_picker("Color", "#FFFFFF")
+    with c4:
+        st.button("🗑️ Clear", on_click=clear_canvas, use_container_width=True)
+    with c5:
+        st.button(
+            "👁️ Show" if not st.session_state.show_canvas else "🙈 Hide",
+            on_click=toggle_canvas_preview,
+            use_container_width=True
         )
-    
-    # Analyze Image Button
-    with col2:
-        analyze_btn = st.button("✨ Analyze Image", type="primary", use_container_width=True)
 
-# Prepare image data if present
-base64_image = None
-if uploaded_file:
-    bytes_data = uploaded_file.getvalue()
-    base64_image = base64.b64encode(bytes_data).decode('utf-8')
-    st.image(uploaded_file, width=150, caption="Attached")
-
-# Logic:
-# 1. Click "Analyze Image" -> Triggers process_input with image + default text
-# 2. Type text + Enter -> Triggers process_input with text + image (if attached)
-
-if analyze_btn:
-    if uploaded_file:
-        process_input(
-            prompt_text="Please solve the problem in this image.",
-            image_b64=base64_image,
-            display_image=uploaded_file
-        )
-        st.rerun() # Rerun to update chat history
-    else:
-        st.warning("Please upload an image first.")
-
-if prompt := st.chat_input("Ask your math question..."):
-    process_input(
-        prompt_text=prompt,
-        image_b64=base64_image,
-        display_image=uploaded_file
+    # 🔥 CANVAS (NOW ALWAYS RENDERS)
+    canvas = st_canvas(
+        key=st.session_state.canvas_key,
+        height=400,
+        width=1000,
+        drawing_mode=mode,
+        stroke_width=width,
+        stroke_color=color,
+        background_color="#1E1E1E",
+        update_streamlit=True
     )
+
+    # Preview Section
+    if st.session_state.show_canvas and canvas.image_data is not None:
+        with st.expander("Canvas Preview (what AI sees)", expanded=True):
+            st.image(
+                canvas.image_data,
+                caption="RGBA Canvas Output",
+                width="stretch"
+            )
+
+    if st.button("✨ Solve Sketch", use_container_width=True):
+        if canvas.image_data is None:
+            st.warning("Draw something first")
+        else:
+            img = Image.fromarray(canvas.image_data.astype("uint8"), "RGBA")
+            bg = Image.new("RGB", img.size, (0, 0, 0))
+            bg.paste(img, mask=img.split()[3])
+
+            buf = io.BytesIO()
+            bg.save(buf, format="PNG")
+
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            process_input("Solve this drawn problem", b64, bg)
+            st.rerun()
+
+# ====================================================
+# Text Input
+# ====================================================
+if prompt := st.chat_input("Ask your math question..."):
+    process_input(prompt)
     st.rerun()
