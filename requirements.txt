@@ -20,3 +20,7 @@ playwright
 wolframalpha
 sympy
 ultralytics
+streamlit-drawable-canvas
+pydantic-settings
+beautifulsoup4
+fake-useragent

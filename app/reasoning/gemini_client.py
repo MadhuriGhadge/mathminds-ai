@@ -11,6 +11,7 @@ from google import genai
 from google.genai import types
 import pybreaker
 from tenacity import retry, stop_after_attempt, wait_random_exponential, retry_if_exception_type
+from app.core.settings import settings
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -26,10 +27,10 @@ class GeminiSolver:
         Initialize the GeminiSolver.
 
         Args:
-            api_key: Gemini API key. Defaults to GOOGLE_API_KEY env var.
+            api_key: Gemini API key. Defaults to settings.GOOGLE_API_KEY.
             model_name: Model to use. Defaults to gemini-flash-latest.
         """
-        self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
+        self.api_key = api_key or settings.GOOGLE_API_KEY
         if not self.api_key:
             logger.warning("No API key provided for GeminiSolver. Calls will fail.")
         

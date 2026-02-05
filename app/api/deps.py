@@ -9,6 +9,8 @@ from app.core.orchestrator import Orchestrator
 from app.memory.cache import CacheManager
 from app.memory.database import DatabaseManager
 
+from app.core.settings import settings
+
 logger = logging.getLogger(__name__)
 
 # --- Connection Pools (Global Singletons) ---
@@ -27,7 +29,7 @@ def get_redis_pool() -> redis.ConnectionPool:
         return _redis_pool
 
     try:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        redis_url = settings.REDIS_URL
         if not redis_url:
             raise ValueError("REDIS_URL is not set.")
 
@@ -53,7 +55,7 @@ def get_mongo_client() -> pymongo.MongoClient:
         return _mongo_client
 
     try:
-        mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+        mongo_uri = settings.MONGO_URI
         client = pymongo.MongoClient(
             mongo_uri, 
             serverSelectionTimeoutMS=5000,

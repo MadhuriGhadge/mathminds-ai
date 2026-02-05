@@ -9,23 +9,18 @@ import logging
 import datetime
 from datetime import datetime
 import uuid
-from dotenv import load_dotenv
-
-
-
-# Load environment variables
-load_dotenv()
+import sys
 
 from fastapi import FastAPI, HTTPException, status, Depends, Request
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.limiter import limiter
-from app.core.limiter import limiter
 from app.core.orchestrator import Orchestrator
 from app.core.schemas import SolveRequest, SolveResponse, HealthResponse
 from app.core.logging_config import configure_logging
 from app.core.errors import AppError, ErrorCodes, ERROR_MESSAGES
+from app.core.settings import settings  # New settings module
 import os
 # Import dependency
 from app.api.deps import get_orchestrator, get_redis_pool, get_mongo_client
@@ -39,6 +34,24 @@ app = FastAPI(
     description="API for solving math problems using Gemini and local reasoning.",
     version="1.0.0"
 )
+
+# Global Exception Handler (Catch-All)
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.error(f"[{request_id}] Unhandled Exception: {str(exc)}", exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "status": "error",
+            "error": "Internal Server Error",
+            "error_code": "INTERNAL_ERROR",
+            "metadata": {
+                "request_id": request_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        }
+    )
 
 # Initialize Rate Limiter
 app.state.limiter = limiter
