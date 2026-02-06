@@ -21,7 +21,7 @@ The final objective is to build **"MathMinds AI,"** an intelligent analytical we
 - **Persistence & state**  
   - Store user sessions, problem states, solution logs and allow users to revisit and refine earlier problems.
 
-## Architecture (high-level)
+## Architecture
 - **Frontend**: Streamlit or Gradio for interactive demos; future web UI for production.
 - **Backend**: FastAPI serving endpoints for OCR, solver, web-scraping, image analysis, and retrieval.
 - **DB / Storage**: MongoDB for session/state and metadata; vector DB (or embeddings layer) for semantic retrieval.
