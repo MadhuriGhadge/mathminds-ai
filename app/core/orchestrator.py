@@ -134,19 +134,21 @@ class Orchestrator:
 
         # 3. Memory Lookup (Cache & DB)
         # 3a. Cache Lookup
-        try:
-            result["metadata"]["stage"] = "cache_lookup"
-            logger.info("Step 3: Checking cache", extra={"request_id": request_id, "hash": problem_hash, "step": 3})
-            cached_answer = self.cache_manager.get_cached_answer(problem_hash)
-            if cached_answer:
-                logger.info("Cache hit", extra={"request_id": request_id, "hash": problem_hash, "source": "cache"})
-                result["status"] = "success"
-                result["answer"] = cached_answer
-                result["metadata"]["source"] = "cache"
-                result["metadata"]["latency"] = time.time() - start_time
-                return result
-        except Exception as e:
-            logger.error(f"[{request_id}] Cache lookup failed: {e}")
+        from app.core.settings import settings
+        if settings.ENABLE_CACHE:
+            try:
+                result["metadata"]["stage"] = "cache_lookup"
+                logger.info("Step 3: Checking cache", extra={"request_id": request_id, "hash": problem_hash, "step": 3})
+                cached_answer = self.cache_manager.get_cached_answer(problem_hash)
+                if cached_answer:
+                    logger.info("Cache hit", extra={"request_id": request_id, "hash": problem_hash, "source": "cache"})
+                    result["status"] = "success"
+                    result["answer"] = cached_answer
+                    result["metadata"]["source"] = "cache"
+                    result["metadata"]["latency"] = time.time() - start_time
+                    return result
+            except Exception as e:
+                logger.error(f"[{request_id}] Cache lookup failed: {e}")
         
         # 3b. DB Lookup
         try:
@@ -300,7 +302,8 @@ class Orchestrator:
                 ai_text = generated_solution.get("text") or str(generated_solution)
                 self.db_manager.save_chat_message(session_id, "model", ai_text)
             
-            self.cache_manager.set_cached_answer(problem_hash, generated_solution)
+            if settings.ENABLE_CACHE:
+                self.cache_manager.set_cached_answer(problem_hash, generated_solution)
 
         except Exception as e:
             logger.error(f"Storage failed: {e}")
