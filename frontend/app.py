@@ -266,7 +266,7 @@ def process_input(text, image_b64=None, preview=None):
                 "model_preference": "reasoning" if "Advanced" in model_choice else "fast"
             }
             try:
-                r = requests.post(API_URL, json=payload, timeout=60)
+                r = requests.post(API_URL, json=payload, timeout=120)
                 data = r.json()
 
                 if data["status"] != "success":
