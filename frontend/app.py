@@ -239,6 +239,26 @@ st.caption("Ask, upload, or draw a math problem")
 for m in messages():
     avatar = "👤" if m["role"] == "user" else "🤖"
     with st.chat_message(m["role"], avatar=avatar):
+        if m.get("metadata"):
+            meta = m["metadata"]
+            source = meta.get("source", "unknown")
+            model = meta.get("model_used", "unknown")
+            latency = meta.get("latency", 0)
+            
+            badges = []
+            if source == "deterministic":
+                badges.append(f"⚡ **Deterministic** ({model})")
+            elif source == "cache":
+                badges.append("💾 **Cache Hit**")
+            elif source == "generated":
+                badges.append(f"🤖 **AI Generated** ({model})")
+                
+            if latency:
+                badges.append(f"⏱️ **{latency:.2f}s**")
+                
+            if badges:
+                st.caption(" | ".join(badges))
+
         st.markdown(m["content"])
         if m.get("image_data"):
             st.image(base64.b64decode(m["image_data"]), width=200)
@@ -277,6 +297,25 @@ def process_input(text, image_b64=None, preview=None):
                 if ans.get("latex"):
                     st.latex(ans["latex"])
 
+                # Metadata badges
+                metadata = data.get("metadata", {})
+                source = metadata.get("source", "unknown")
+                model = metadata.get("model_used", "unknown")
+                latency = metadata.get("latency", 0)
+                
+                # Format badges
+                badges = []
+                if source == "deterministic":
+                    badges.append(f"⚡ **Deterministic** ({model})")
+                elif source == "cache":
+                    badges.append("💾 **Cache Hit**")
+                else:
+                    badges.append(f"🤖 **AI Generated** ({model})")
+                
+                badges.append(f"⏱️ **{latency:.2f}s**")
+                
+                st.markdown(" | ".join(badges))
+                
                 st.markdown(f"**Answer:**\n\n> {ans['final_answer']}")
 
                 with st.expander("Steps"):
@@ -285,7 +324,8 @@ def process_input(text, image_b64=None, preview=None):
                 add_message(
                     "assistant",
                     f"**Answer:**\n\n> {ans['final_answer']}",
-                    reasoning=ans.get("reasoning", "")
+                    reasoning=ans.get("reasoning", ""),
+                    metadata=metadata # Store for history
                 )
             except Exception as e:
                 st.error(f"Error: {e}")
