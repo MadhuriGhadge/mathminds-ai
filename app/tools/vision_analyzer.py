@@ -3,7 +3,6 @@ import base64
 import numpy as np
 import cv2
 from typing import Dict, Any, Optional
-from ultralytics import YOLO
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +20,8 @@ class VisionAnalyzer:
         """
         try:
             logger.info(f"Loading YOLO model: {model_path}")
+            # Lazy import to avoid startup lag
+            from ultralytics import YOLO
             self.model = YOLO(model_path)
             
             # Color ranges in HSV

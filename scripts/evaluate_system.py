@@ -4,16 +4,22 @@ import logging
 import time
 import sys
 import os
+from dotenv import load_dotenv
+
+# Load env vars
+load_dotenv(override=True)
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from app.core.orchestrator import Orchestrator
 
 # Configure Logging
-logging.basicConfig(level=logging.ERROR) # Mute app logs
+logging.basicConfig(level=logging.INFO, format='%(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("evaluator")
-logger.setLevel(logging.INFO)
 
 DATASET_PATH = "tests/data/evaluation_dataset.json"
 

@@ -18,6 +18,7 @@ from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
 from app.reasoning.classifier import QueryClassifier
 from app.tools.vision_analyzer import VisionAnalyzer
+from app.core.math_normalizer import MathQueryNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class Orchestrator:
             self.web_scraper = WebScraper()
             self.symbolic_solver = SymbolicSolver()
             self.classifier = QueryClassifier()
+            self.math_normalizer = MathQueryNormalizer()
             # Defer loading to avoid startup lag if model not present, but for now init here.
             self.vision_analyzer = VisionAnalyzer()
         except Exception as e:
@@ -64,7 +66,7 @@ class Orchestrator:
         """
         if not text: return False
         if len(text) > 100: return False # Too long might be word problem
-        if any(keyword in text.lower() for keyword in ["integrate", "derive", "limit", "sum"]): return False
+        if any(keyword in text.lower() for keyword in ["integrate", "derive", "limit", "sum", "probability", "combinatorics"]): return False
         return True
 
     async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None, model_preference: str = "fast", session_id: Optional[str] = None) -> Dict[str, Any]:
@@ -173,6 +175,81 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"[{request_id}] Database lookup failed: {e}")
             
+        # 3c. Math Normalization & Deterministic Solving
+        # Try symbolic solver for math-heavy queries before hitting LLMs
+        try:
+            # Check if candidate for math solving (no image, valid text)
+            if not (processed_input.metadata and "image_data" in processed_input.metadata):
+                
+                # 1. Normalize
+                # Use the new MathQueryNormalizer to detect intent
+                math_intent = self.math_normalizer.normalize(processed_input.cleaned_content)
+                
+                if math_intent:
+                    logger.info(f"Math intent detected: {math_intent.intent} for '{math_intent.expression}'", extra={"request_id": request_id})
+                    result["metadata"]["stage"] = "deterministic_solve"
+                    
+                    # 2. Strict Solve
+                    # We run blocking logic in executor
+                    try:
+                        loop = asyncio.get_running_loop()
+                        symbolic_result = await asyncio.wait_for(
+                            loop.run_in_executor(None, self.symbolic_solver.solve, math_intent),
+                            timeout=5.0 
+                        )
+                        
+                        if symbolic_result.get("status") == "success":
+                            logger.info(f"Symbolic solver succeeded via {symbolic_result.get('source')}")
+                            
+                            generated_solution = {
+                                "latex": symbolic_result["content"],
+                                "final_answer": symbolic_result["content"],
+                                "answer": symbolic_result["content"], # Backward compatibility
+                                "reasoning": f"Solved deterministically using {symbolic_result['source']}",
+                                "confidence_score": 1.0,
+                                "model": symbolic_result["source"]
+                            }
+                            
+                            result["status"] = "success"
+                            result["answer"] = generated_solution
+                            result["metadata"]["source"] = "deterministic"
+                            result["metadata"]["model_used"] = symbolic_result["source"]
+                            result["metadata"]["latency"] = time.time() - start_time
+                            
+                            # Cache
+                            try:
+                                if settings.ENABLE_CACHE:
+                                    self.cache_manager.set_cached_answer(problem_hash, generated_solution)
+                            except Exception: pass
+                            
+                            return result
+                        
+                        else:
+                            # FAIL -> STRICT ERROR (User Requirement: Do not fall back to LLM for clear math intents)
+                            # This prevents the 280s timeout loop
+                            error_msg = symbolic_result.get("error", "Unknown error")
+                            logger.warning(f"[{request_id}] Math intent identified but solver failed: {error_msg}. STRICT ROUTING: Stopping.")
+                            
+                            result["error_code"] = ErrorCodes.INTERNAL_ERROR
+                            result["error_msg"] = f"I understood this is a {math_intent.intent} problem but could not solve it. Please check the syntax."
+                            result["metadata"]["debug_error"] = error_msg
+                            return result
+                            
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[{request_id}] Deterministic solver timed out. STRICT ROUTING: Stopping.")
+                        result["error_code"] = ErrorCodes.INTERNAL_ERROR 
+                        result["error_msg"] = "The math solver timed out."
+                        return result
+                    except Exception as sym_err:
+                        logger.error(f"[{request_id}] Deterministic solver error: {sym_err}")
+                        result["error_code"] = ErrorCodes.INTERNAL_ERROR
+                        result["error_msg"] = "Error executing math solver."
+                        return result
+
+        except Exception as e:
+             logger.warning(f"[{request_id}] Deterministic solving logic failed: {e}")
+             # If completely crashed here, we might fall through, but let's try to allow fallthrough only if NOT math intent
+             pass 
         
         # 4. Smart Routing & Reasoning
         try:
