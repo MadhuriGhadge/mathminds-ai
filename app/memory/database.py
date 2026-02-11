@@ -214,3 +214,35 @@ class DatabaseManager:
         except PyMongoError as e:
             logger.error(f"Failed to save message to {session_id}: {e}")
             return False
+
+    # -------------------------------------------------------------------------
+    # User Profile Management
+    # -------------------------------------------------------------------------
+    def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve user profile by ID (Firebase UID).
+        """
+        if self.db is None:
+            return None
+        try:
+            return self.db["users"].find_one({"user_id": user_id})
+        except PyMongoError as e:
+            logger.error(f"Failed to get profile for {user_id}: {e}")
+            return None
+
+    def update_user_profile(self, user_id: str, data: Dict[str, Any]) -> bool:
+        """
+        Update or create user profile.
+        """
+        if self.db is None:
+            return False
+        try:
+            self.db["users"].update_one(
+                {"user_id": user_id},
+                {"$set": {**data, "updated_at": datetime.now(timezone.utc)}},
+                upsert=True
+            )
+            return True
+        except PyMongoError as e:
+            logger.error(f"Failed to update profile for {user_id}: {e}")
+            return False

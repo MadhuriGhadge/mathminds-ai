@@ -79,13 +79,28 @@ def get_cache_manager() -> CacheManager:
 def get_db_manager() -> DatabaseManager:
     return DatabaseManager(client=get_mongo_client())
 
-@lru_cache()
+from threading import Lock
+
+_orchestrator: Optional[Orchestrator] = None
+_orchestrator_lock = Lock()
+
 def get_orchestrator() -> Orchestrator:
     """
-    Dependency provider for the Orchestrator singleton.
-    Injects shared managers.
+    Thread-safe Singleton provider for Orchestrator.
+    Ensures heavy models are loaded exactly once per process.
     """
-    return Orchestrator(
-        cache_manager=get_cache_manager(),
-        db_manager=get_db_manager()
-    )
+    global _orchestrator
+    if _orchestrator:
+        return _orchestrator
+
+    with _orchestrator_lock:
+        # Double-check locking
+        if _orchestrator:
+            return _orchestrator
+            
+        logger.info("Initializing Orchestrator Singleton...")
+        _orchestrator = Orchestrator(
+            cache_manager=get_cache_manager(),
+            db_manager=get_db_manager()
+        )
+        return _orchestrator

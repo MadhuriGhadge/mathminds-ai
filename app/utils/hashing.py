@@ -1,32 +1,30 @@
 import hashlib
 import unicodedata
 
-def generate_problem_hash(text: str) -> str:
+def generate_problem_hash(text: str, image_data: str = None) -> str:
     """
-    Generates a deterministic SHA256 hash for a given problem text.
-    
-    The text is normalized (NFKC), lowercased, and stripped of leading/trailing
-    whitespace ensuring that semantically identical inputs (ignoring minor
-    formatting differences) produce the same hash.
-
-    Args:
-        text (str): The input problem text to hash.
-
-    Returns:
-        str: The hexadecimal SHA256 hash string.
+    Generates a deterministic SHA256 hash for a given problem text AND optional image.
     """
-    if not text:
-        raise ValueError("Input text cannot be empty/None for hashing.")
+    if not text and not image_data:
+        raise ValueError("Input text and image cannot both be empty for hashing.")
 
-    # Normalize unicode characters to NFKC form (compatibility decomposition)
-    # This helps in treating different representations of same characters as identical.
-    normalized_text = unicodedata.normalize('NFKC', text)
+    # Normalize unicode characters
+    normalized_text = unicodedata.normalize('NFKC', text or "")
     
     # Lowercase and strip whitespace
     cleaned_text = normalized_text.lower().strip()
     
+    # Base content
+    content_to_hash = cleaned_text
+    
+    # Append image data if present
+    if image_data:
+        # Image data is usually a long base64 string. 
+        # We append it to ensure uniqueness for visual problems.
+        content_to_hash += f"|image:{image_data}"
+
     # Encode to bytes
-    encoded_text = cleaned_text.encode('utf-8')
+    encoded_text = content_to_hash.encode('utf-8')
     
     # Generate SHA256 hash
     return hashlib.sha256(encoded_text).hexdigest()

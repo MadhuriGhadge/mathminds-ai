@@ -23,16 +23,48 @@ from app.core.errors import AppError, ErrorCodes, ERROR_MESSAGES
 from app.core.settings import settings  # New settings module
 import os
 # Import dependency
-from app.api.deps import get_orchestrator, get_redis_pool, get_mongo_client
+from app.api.deps import get_orchestrator, get_redis_pool, get_mongo_client, get_db_manager
+from app.core.security import verify_token, get_current_user
+
+from contextlib import asynccontextmanager
 
 # Configure logging
 configure_logging()
 logger = logging.getLogger(__name__)
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Preload resources
+    logger.info("🚀 Starting MathMinds AI... Warming up resources.")
+    
+    try:
+        # 1. Initialize Redis Pool
+        get_redis_pool()
+        
+        # 2. Initialize MongoDB Client
+        get_mongo_client()
+        
+        # 3. Initialize Orchestrator (Loads YOLO, Supabase, etc.)
+        # This is the heavy lifting
+        get_orchestrator()
+        
+        logger.info("✅ Startup complete: Orchestrator & DBs ready.")
+    except Exception as e:
+        logger.critical(f"❌ Critical Startup Error: {e}")
+        # We might want to exit here, but let's allow it to run in degraded mode 
+        # or let the first request fail.
+    
+    yield
+    
+    # Shutdown: Cleanup if needed
+    logger.info("🛑 Shutting down MathMinds AI...")
+    # (Optional) Close connections here if we implemented close methods
+
 app = FastAPI(
     title="MathMinds AI API",
     description="API for solving math problems using Gemini and local reasoning.",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Global Exception Handler (Catch-All)
@@ -173,7 +205,8 @@ async def health_check():
 async def solve_problem(
     request: Request,
     solve_req: SolveRequest, 
-    orchestrator: Orchestrator = Depends(get_orchestrator)
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+    current_user: dict = Depends(get_current_user) # Protect this route
 ):
     """
     Solves a mocked problem provided in the request body.
@@ -193,7 +226,8 @@ async def solve_problem(
             image=solve_req.image, 
             request_id=req_id,
             model_preference=solve_req.model_preference,
-            session_id=solve_req.session_id
+            session_id=solve_req.session_id,
+            user_id=current_user.get("uid")
         )
         
         # Sanitize metadata for public response
@@ -201,10 +235,18 @@ async def solve_problem(
         public_metadata.pop("_internal_debug", None)
         
         # Map internal result to schema
+        # Map internal result to schema
         return SolveResponse(
+            request_id=result.get("request_id", req_id),
             status=result["status"],
-            answer=result["answer"],
-            error=result.get("error_msg"), # Map internal msg to public error field
+            problem_type=result.get("problem_type", "unknown"),
+            source=result.get("source", "unknown"),
+            answer=result.get("answer"),
+            steps=result.get("steps", []),
+            explanation=result.get("explanation"),
+            confidence=result.get("confidence", 0.0),
+            cached=result.get("cached", False),
+            error=result.get("error_msg"), # Keep for backward compat if any
             error_code=result.get("error_code"),
             metadata=public_metadata
         )
@@ -221,6 +263,58 @@ async def solve_problem(
                 "metadata": {"request_id": req_id}
             }
         )
+
+# --- User Profile Endpoints ---
+from pydantic import BaseModel
+from typing import List, Optional
+
+class UserProfileUpdate(BaseModel):
+    display_name: Optional[str] = None
+    math_level: Optional[str] = "Student"
+    interests: Optional[List[str]] = []
+
+@app.get("/users/profile")
+async def get_profile(
+    current_user: dict = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """Get current user profile."""
+    try:
+        profile = db_manager.get_user_profile(current_user["uid"])
+        if not profile:
+            # Return basic info if no profile exists yet
+            return {
+                "user_id": current_user["uid"],
+                "email": current_user.get("email"),
+                "display_name": "",
+                "math_level": "Student",
+                "interests": [],
+                "is_new": True
+            }
+        
+        # Remove MongoDB _id
+        if "_id" in profile:
+            del profile["_id"]
+        return profile
+    except Exception as e:
+        logger.error(f"Profile fetch error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch profile")
+
+@app.post("/users/profile")
+async def update_profile(
+    profile_data: UserProfileUpdate,
+    current_user: dict = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """Update user profile."""
+    try:
+        success = db_manager.update_user_profile(current_user["uid"], profile_data.dict(exclude_unset=True))
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update profile")
+        return {"status": "success", "profile": profile_data.dict()}
+    except Exception as e:
+        logger.error(f"Profile update error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,53 +1,59 @@
 import os
-import logging
-import uuid
+import asyncio
 from celery import Celery
-from app.core.orchestrator import Orchestrator
+from app.core.settings import settings
+from app.tools.web_scraper import WebScraper
+import logging
 
-# Configure logging
+# Configure Logging
 logger = logging.getLogger(__name__)
 
-# Configure Celery
-# Broker and Backend URL from env or default to localhost redis
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-
+# Initialize Celery
 celery_app = Celery(
     "mathminds_worker",
-    broker=REDIS_URL,
-    backend=REDIS_URL
+    broker=settings.REDIS_URL,
+    backend=settings.REDIS_URL
 )
 
-# Optional configuration
 celery_app.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
-    task_track_started=True,
 )
 
-from app.api.deps import get_orchestrator as _get_shared_orchestrator
-
-def get_orchestrator():
-    """Lazily initializes and returns the orchestrator instance (via shared deps)."""
-    # Using the shared dependency provider ensures connection pooling
-    return _get_shared_orchestrator()
-
-@celery_app.task(name="solve_problem_task", bind=True, acks_late=True)
-def solve_problem_task(self, user_input: str, request_id: str = None):
+@celery_app.task(name="scrape_web_task", bind=True)
+def scrape_web_task(self, query: str, focus: str = ""):
     """
-    Celery task to asynchronously solve a math problem.
+    Celery task to run web scraping in a background worker.
+    Since Playwright is async/sync hybrid, we run the sync version here
+    or manage the loop carefully.
     """
-    if not request_id:
-        request_id = str(uuid.uuid4())
-        
+    logger.info(f"Worker: Starting scrape for '{query}'")
+    
+    # We use the sync logic of the scraper tools or run the async one via asyncio.run
+    # For simplicity/stability in Celery, we'll instantiate the scraper and run.
+    
+    # Note: WebScraper class uses ProcessPoolExecutor internally for safety on Windows
+    # Here we are already in a worker process, so we can just run it.
+    
+    scraper = WebScraper(headless=True)
+    
+    # Run async scrape in this sync task
     try:
-        orchestrator = get_orchestrator()
-        result = orchestrator.process_problem(user_input, request_id=request_id)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(scraper.scrape(query, extraction_focus=focus))
+        loop.close()
         return result
     except Exception as e:
-        logger.error(f"[{request_id}] Error in solve_problem_task: {e}")
-        # Optionally retry
-        # raise self.retry(exc=e, countdown=5, max_retries=3)
-        return {"status": "error", "error": str(e), "metadata": {"request_id": request_id, "stage": "worker"}}
+        logger.error(f"Worker Scrape Failed: {e}")
+        return {"error": str(e), "status": "error"}
+
+@celery_app.task(name="solve_heavy_math_task")
+def solve_heavy_math_task(problem_text: str):
+    """
+    Placeholder for really heavy symbolic computation if needed.
+    """
+    pass

@@ -1,394 +1,366 @@
 import logging
 import time
-from typing import Any, Dict, Optional
 import asyncio
+import re
+from typing import Any, Dict, Optional, List
+from enum import Enum
 
-from app.core.input_processor import InputProcessor, InputType
+from app.core.input_processor import InputProcessor
 from app.memory.cache import CacheManager
 from app.memory.database import DatabaseManager
-# from app.reasoning.gemini_client import GeminiSolver # Old Import
 from app.models.gemini import GeminiModel
 from app.models.qwen import QwenModel
-
 from app.utils.hashing import generate_problem_hash
 from app.validation.answer_checker import AnswerValidator
-from app.core.errors import ErrorCodes, ERROR_MESSAGES
-from app.core.router import QueryRouter, RouteType
 from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
-from app.reasoning.classifier import QueryClassifier
 from app.tools.vision_analyzer import VisionAnalyzer
+from app.tools.similarity_search import SimilarProblemFinder
 from app.core.math_normalizer import MathQueryNormalizer
+from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# --- Intent Enums ---
+class IntentType(Enum):
+    ARITHMETIC = "arithmetic"
+    SYMBOLIC_MATH = "symbolic_math"
+    VISION = "vision"
+    SEARCH = "search"
+    CONCEPTUAL = "conceptual"
+    UNKNOWN = "unknown"
+
 class Orchestrator:
     """
-    Main coordinator for the MathMinds AI Brain.
-    Integrates input processing, memory, reasoning, and validation.
+    Deterministic Orchestrator for MathMinds AI.
+    Flow: Input -> Classify -> Route -> Solve -> Explain.
     """
 
     def __init__(self, cache_manager: Optional[CacheManager] = None, db_manager: Optional[DatabaseManager] = None):
-        """
-        Initialize all sub-components.
-        Args:
-            cache_manager: Injectable CacheManager (singleton).
-            db_manager: Injectable DatabaseManager (singleton).
-        """
         try:
             self.input_processor = InputProcessor()
-            # If not provided, create fresh ones (backward compat or for tests)
             self.cache_manager = cache_manager or CacheManager()
             self.db_manager = db_manager or DatabaseManager()
             
-            # --- MODELS ---
+            # Models
             self.gemini = GeminiModel()
-            self.qwen = QwenModel() # Fallback / Simple model
+            self.qwen = QwenModel()
             
-            self.validator = AnswerValidator()
-            
-            # Smart Routing Tools
-            self.router = QueryRouter()
+            # Tools
             self.web_scraper = WebScraper()
             self.symbolic_solver = SymbolicSolver()
-            self.classifier = QueryClassifier()
-            self.math_normalizer = MathQueryNormalizer()
-            # Defer loading to avoid startup lag if model not present, but for now init here.
             self.vision_analyzer = VisionAnalyzer()
+            self.similarity_finder = SimilarProblemFinder()
+            self.math_normalizer = MathQueryNormalizer()
+            
         except Exception as e:
-            logger.critical(f"Failed to initialize Orchestrator components: {e}")
+            logger.critical(f"Failed to initialize Orchestrator: {e}")
             raise
 
-    def _is_simple_problem(self, text: str) -> bool:
+    def _classify_intent(self, text: str, has_image: bool) -> IntentType:
         """
-        Heuristic to decide if a problem is simple enough for the local model.
-        e.g., Short arithmetic, simple algebra, no latex complexity.
+        Fast, rule-based intent classifier. No LLM used here.
         """
-        if not text: return False
-        if len(text) > 100: return False # Too long might be word problem
-        if any(keyword in text.lower() for keyword in ["integrate", "derive", "limit", "sum", "probability", "combinatorics"]): return False
-        return True
+        if has_image:
+            return IntentType.VISION
+            
+        if not text:
+            return IntentType.UNKNOWN
+            
+        text = text.lower().strip()
+        
+        # 1. Search Intent
+        if any(w in text for w in ["price of", "news", "latest", "who is", "weather", "stock", "search for"]):
+            return IntentType.SEARCH
+            
+        # 2. Arithmetic (Target Symbolic)
+        # Check if purely numbers/operators/basic math keywords
+        if re.match(r'^[\d\s\+\-\*\/\^\(\)\.\=]+$', text):
+            return IntentType.ARITHMETIC
+            
+        # 3. Symbolic Math (Target Symbolic)
+        math_keywords = ["solve", "integrate", "derive", "derivative", "limit", "sum", "simplify", "factor", "equation", "latex"]
+        if any(w in text for w in math_keywords) or "=" in text or "\\" in text: # Latex has backslashes
+            return IntentType.SYMBOLIC_MATH
 
-    async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None, model_preference: str = "fast", session_id: Optional[str] = None) -> Dict[str, Any]:
+        # 4. Conceptual/General (Target LLM)
+        return IntentType.CONCEPTUAL
+
+    async def process_problem(self, text: Optional[str] = None, image: Optional[str] = None, request_id: Optional[str] = None, model_preference: str = "fast", session_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Orchestrates the problem solving pipeline.
+        Main Deterministic Pipeline.
         """
         start_time = time.time()
-        result = {
+        request_id = request_id or "unknown"
+        
+        
+        # --- User Context ---
+        user_context_str = ""
+        if user_id:
+             try:
+                 profile = self.db_manager.get_user_profile(user_id)
+                 if profile:
+                     level = profile.get("math_level", "Student")
+                     interests = ", ".join(profile.get("interests", []))
+                     user_context_str = f"User Profile: {level} level."
+                     if interests:
+                         user_context_str += f" Interests: {interests}."
+                     user_context_str += " Adjust explanation complexity to match this level."
+             except Exception as e:
+                 logger.warning(f"Failed to fetch profile in orchestrator: {e}")
+        
+        # --- Strict Output Schema ---
+        result_schema = {
+            "request_id": request_id,
             "status": "error",
+            "problem_type": "unknown",
+            "source": "unknown",
             "answer": None,
-            "error_code": None,
-            "error_msg": None,
+            "steps": [],
+            "explanation": None,
+            "confidence": 0.0,
+            "cached": False,
             "metadata": {
-                "request_id": request_id, 
-                "stage": "init",
-                "model_used": model_preference
+                "latency_ms": 0,
+                "model": None,
+                "tools_used": []
             }
         }
 
-        # 1. Input Processing
         try:
-            result["metadata"]["stage"] = "input_processing"
-            logger.info("Step 1: Processing input", extra={"request_id": request_id, "step": 1})
-            
-            # Use compound processor
-            processed_input = self.input_processor.process_compound(text_input=text, image_input=image)
-            
-            # Construct a representation for logging/storage
-            user_input_repr = text or ""
-            if image:
-                user_input_repr += " [IMAGE_ATTACHED]"
-            
-            if not processed_input.is_valid:
-                logger.warning(f"[{request_id}] Invalid input: {processed_input.error_message}")
-                result["error"] = processed_input.error_message
-                return result
-            
-        except Exception as e:
-            logger.error(f"[{request_id}] Input processing failed: {e}")
-            result["error_code"] = ErrorCodes.INPUT_VALIDATION_ERROR
-            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.INPUT_VALIDATION_ERROR]
-            result["metadata"]["_internal_debug"] = str(e)
-            return result
+            # 1. Input Processing
+            processed = self.input_processor.process_compound(text_input=text, image_input=image)
+            if not processed.is_valid:
+                result_schema["explanation"] = processed.error_message
+                return self._finalize_result(result_schema, start_time)
 
-        # 2. Hashing
-        try:
-            result["metadata"]["stage"] = "hashing"
-            logger.info("Step 2: Generating hash", extra={"request_id": request_id, "step": 2})
-            
-            hash_input = processed_input.cleaned_content
-            
-            if processed_input.metadata and "image_data" in processed_input.metadata:
-                import hashlib
-                image_data = processed_input.metadata["image_data"]
-                if image_data:
-                    img_hash = hashlib.md5(image_data.encode('utf-8')).hexdigest()
-                    hash_input = f"{hash_input}|image:{img_hash}"
-            
-            problem_hash = generate_problem_hash(hash_input)
-            result["metadata"]["hash"] = problem_hash
-        except Exception as e:
-            logger.error(f"[{request_id}] Hashing failed: {e}")
-            result["error_code"] = ErrorCodes.INTERNAL_ERROR
-            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.INTERNAL_ERROR]
-            result["metadata"]["_internal_debug"] = str(e)
-            return result
+            # 2. Hashing & Cache
+            image_data = processed.metadata.get("image_data")
+            p_hash = generate_problem_hash(processed.cleaned_content, image_data)
+            lock_acquired = False
+            lock_key = f"lock:{p_hash}"
 
-        # 3. Memory Lookup (Cache & DB)
-        # 3a. Cache Lookup
-        from app.core.settings import settings
-        if settings.ENABLE_CACHE:
-            try:
-                result["metadata"]["stage"] = "cache_lookup"
-                logger.info("Step 3: Checking cache", extra={"request_id": request_id, "hash": problem_hash, "step": 3})
-                cached_answer = self.cache_manager.get_cached_answer(problem_hash)
-                if cached_answer:
-                    logger.info("Cache hit", extra={"request_id": request_id, "hash": problem_hash, "source": "cache"})
-                    result["status"] = "success"
-                    result["answer"] = cached_answer
-                    result["metadata"]["source"] = "cache"
-                    result["metadata"]["latency"] = time.time() - start_time
-                    return result
-            except Exception as e:
-                logger.error(f"[{request_id}] Cache lookup failed: {e}")
-        
-        # 3b. DB Lookup
-        try:
-            result["metadata"]["stage"] = "db_lookup"
-            logger.info("Step 3b: Checking database", extra={"request_id": request_id, "hash": problem_hash, "step": "3b"})
-            db_record = self.db_manager.find_by_hash(problem_hash)
-            if db_record and "answer" in db_record:
-                logger.info("Database hit", extra={"request_id": request_id, "hash": problem_hash, "source": "database"})
-                answer_data = db_record["answer"]
-                
-                try:
-                    self.cache_manager.set_if_not_exists(problem_hash, answer_data)
-                except Exception as cache_err:
-                     logger.warning(f"[{request_id}] Failed to repopulate cache: {cache_err}")
-
-                result["status"] = "success"
-                result["answer"] = answer_data
-                result["metadata"]["source"] = "database"
-                result["metadata"]["latency"] = time.time() - start_time
-                return result
-
-        except Exception as e:
-            logger.error(f"[{request_id}] Database lookup failed: {e}")
-            
-        # 3c. Math Normalization & Deterministic Solving
-        # Try symbolic solver for math-heavy queries before hitting LLMs
-        try:
-            # Check if candidate for math solving (no image, valid text)
-            if not (processed_input.metadata and "image_data" in processed_input.metadata):
-                
-                # 1. Normalize
-                # Use the new MathQueryNormalizer to detect intent
-                math_intent = self.math_normalizer.normalize(processed_input.cleaned_content)
-                
-                if math_intent:
-                    logger.info(f"Math intent detected: {math_intent.intent} for '{math_intent.expression}'", extra={"request_id": request_id})
-                    result["metadata"]["stage"] = "deterministic_solve"
-                    
-                    # 2. Strict Solve
-                    # We run blocking logic in executor
-                    try:
-                        loop = asyncio.get_running_loop()
-                        symbolic_result = await asyncio.wait_for(
-                            loop.run_in_executor(None, self.symbolic_solver.solve, math_intent),
-                            timeout=5.0 
-                        )
-                        
-                        if symbolic_result.get("status") == "success":
-                            logger.info(f"Symbolic solver succeeded via {symbolic_result.get('source')}")
-                            
-                            generated_solution = {
-                                "latex": symbolic_result["content"],
-                                "final_answer": symbolic_result["content"],
-                                "answer": symbolic_result["content"], # Backward compatibility
-                                "reasoning": f"Solved deterministically using {symbolic_result['source']}",
-                                "confidence_score": 1.0,
-                                "model": symbolic_result["source"]
-                            }
-                            
-                            result["status"] = "success"
-                            result["answer"] = generated_solution
-                            result["metadata"]["source"] = "deterministic"
-                            result["metadata"]["model_used"] = symbolic_result["source"]
-                            result["metadata"]["latency"] = time.time() - start_time
-                            
-                            # Cache
-                            try:
-                                if settings.ENABLE_CACHE:
-                                    self.cache_manager.set_cached_answer(problem_hash, generated_solution)
-                            except Exception: pass
-                            
-                            return result
-                        
-                        else:
-                            # FAIL -> STRICT ERROR (User Requirement: Do not fall back to LLM for clear math intents)
-                            # This prevents the 280s timeout loop
-                            error_msg = symbolic_result.get("error", "Unknown error")
-                            logger.warning(f"[{request_id}] Math intent identified but solver failed: {error_msg}. STRICT ROUTING: Stopping.")
-                            
-                            result["error_code"] = ErrorCodes.INTERNAL_ERROR
-                            result["error_msg"] = f"I understood this is a {math_intent.intent} problem but could not solve it. Please check the syntax."
-                            result["metadata"]["debug_error"] = error_msg
-                            return result
-                            
-                    except asyncio.TimeoutError:
-                        logger.warning(f"[{request_id}] Deterministic solver timed out. STRICT ROUTING: Stopping.")
-                        result["error_code"] = ErrorCodes.INTERNAL_ERROR 
-                        result["error_msg"] = "The math solver timed out."
-                        return result
-                    except Exception as sym_err:
-                        logger.error(f"[{request_id}] Deterministic solver error: {sym_err}")
-                        result["error_code"] = ErrorCodes.INTERNAL_ERROR
-                        result["error_msg"] = "Error executing math solver."
-                        return result
-
-        except Exception as e:
-             logger.warning(f"[{request_id}] Deterministic solving logic failed: {e}")
-             # If completely crashed here, we might fall through, but let's try to allow fallthrough only if NOT math intent
-             pass 
-        
-        # 4. Smart Routing & Reasoning
-        try:
-            result["metadata"]["stage"] = "reasoning"
-            logger.info("Step 4: Smart Routing & Solving", extra={"request_id": request_id, "step": 4})
-            
-            # Extract image data if available
-            image_data = None
-            if processed_input.metadata and "image_data" in processed_input.metadata:
-                image_data = processed_input.metadata["image_data"]
-
-            # Tool Context (Web, Symbolic, Vision) - Keep existing logic
-            # Simplified for now to focus on Model Swap, but retaining minimal tool structure
-            tool_context = ""
-            # ... (Tool logic omitted for brevity in diff, but assumed present or we can re-add if needed heavily)
-            # The user asked for specific Qwen logic integration, so we focus on that.
-            
-            cleaned_text = processed_input.cleaned_content
-
-            # --- MODEL SELECTION LOGIC ---
-            generated_solution = None
-            model_used_log = "none"
-            fallback_reason = None
-
-            # 1. Try Qwen if simple, no image, and enabled
-            from app.core.settings import settings
-            if settings.ENABLE_LOCAL_MODELS and self._is_simple_problem(cleaned_text) and not image_data:
-                try:
-                    logger.info("Attempting local Qwen model for simple problem...")
-                    qwen_res = await self.qwen.solve(cleaned_text)
-                    
-                    # Trust threshold (0.0 - 1.0)
-                    confidence = qwen_res.get("confidence", 0.0)
-                    
-                    if confidence > 0.7:
-                        generated_solution = qwen_res
-                        result["metadata"]["model_used"] = "qwen2.5-math"
-                        model_used_log = "qwen"
-                    else:
-                        fallback_reason = f"low_confidence ({confidence:.2f})"
-                        logger.info(f"Qwen confidence too low ({confidence:.2f}), falling back to Gemini.")
-                except Exception as q_err:
-                    fallback_reason = f"error: {str(q_err)}"
-                    logger.warning(f"Qwen failed: {q_err}, falling back to Gemini.")
-            elif not settings.ENABLE_LOCAL_MODELS:
-                 fallback_reason = "local_models_disabled"
-
-            # 2. Fallback to Gemini if no result yet
-            if not generated_solution:
-                target_model = "gemini-2.5-flash"
-                if model_preference == "reasoning":
-                    target_model = "gemini-1.5-pro"
-                
-                # Combine input with tool context (if we had it)
-                final_prompt = cleaned_text + tool_context
-                
-                # If session_id present, add history (Simplified logic here from previous file)
-                if session_id:
-                     history = self.db_manager.get_chat_history(session_id, limit=5)
-                     # ... (history formatting logic would go here if not already present in full file) ...
-
-                logger.info(f"Routing to Gemini ({target_model}). Reason: {fallback_reason or 'complex_query/image'}")
-                generated_solution = await self.gemini.solve(final_prompt, image_data=image_data, model_name=target_model)
-                result["metadata"]["model_used"] = target_model
-                result["metadata"]["fallback_reason"] = fallback_reason
-                model_used_log = "gemini"
-
-            # Mandatory Routing Log
-            routing_log = {
-                "decision": model_used_log,
-                "reason": fallback_reason if fallback_reason else ("simple_text" if model_used_log == "qwen" else "complex_or_image"),
-                "input_type": processed_input.input_type.value,
-                "has_image": bool(image_data),
-                "qwen_enabled": settings.ENABLE_LOCAL_MODELS
-            }
-            logger.info(f"ROUTING_DECISION: {routing_log}")
-            # -----------------------------
-
-        except Exception as e:
-            logger.error(f"[{request_id}] Solver failed: {e}")
-            result["error_code"] = ErrorCodes.GEMINI_ERROR
-            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.GEMINI_ERROR]
-            result["metadata"]["_internal_debug"] = str(e)
-            return result
-
-
-        # 5. Validation
-        try:
-            logger.info("Step 5: Validating answer")
-            is_valid, validation_errors = self.validator.validate(
-                generated_solution, 
-                is_math_problem=(
-                    processed_input.input_type in [InputType.LATEX, InputType.BASE64_IMAGE, InputType.IMAGE_URL] 
-                    or "math" in processed_input.cleaned_content.lower()
-                )
-            )
-
-            if not is_valid:
-                logger.warning(f"Validation failed: {validation_errors}")
-                result["error_code"] = ErrorCodes.GEMINI_ERROR
-                result["error_msg"] = f"Generated answer failed validation."
-                result["metadata"]["validation_errors"] = validation_errors
-                return result
-
-        except Exception as e:
-            logger.error(f"Validation step failed: {e}")
-            result["error_code"] = ErrorCodes.INTERNAL_ERROR
-            result["error_msg"] = ERROR_MESSAGES[ErrorCodes.INTERNAL_ERROR]
-            result["metadata"]["_internal_debug"] = str(e)
-            return result
-
-        # 6. Storage & Caching
-        try:
-            logger.info("Step 6: Storing result")
-            
-            problem_data = {
-                "hash": problem_hash,
-                "original_input": user_input_repr,
-                "cleaned_content": processed_input.cleaned_content,
-                "input_type": processed_input.input_type.value,
-            }
-            
-            self.db_manager.save_problem(problem_data, generated_solution)
-            
-            if session_id:
-                self.db_manager.save_chat_message(session_id, "user", processed_input.cleaned_content)
-                ai_text = generated_solution.get("text") or str(generated_solution)
-                self.db_manager.save_chat_message(session_id, "model", ai_text)
-            
             if settings.ENABLE_CACHE:
-                self.cache_manager.set_cached_answer(problem_hash, generated_solution)
+                cached = self.cache_manager.get_cached_answer(p_hash)
+                if cached:
+                    # Hydrate schema from cache
+                    result_schema.update(cached)
+                    result_schema["status"] = "success"
+                    result_schema["cached"] = True
+                    result_schema["source"] = "cache"
+                    return self._finalize_result(result_schema, start_time)
+
+                # --- CACHE STAMPEDE PROTECTION ---
+                # Try to acquire a lock to prevent multiple workers from solving the same problem
+                if self.cache_manager.redis_client:
+                    # Try to acquire lock (set if not exists with 300s TTL)
+                    is_locked = self.cache_manager.redis_client.set(lock_key, "locked", ex=300, nx=True)
+                    
+                    if is_locked:
+                        lock_acquired = True
+                    else:
+                        # Lock exists -> another process is working. Wait for it.
+                        logger.info(f"Problem {p_hash[:8]} is being processed by another worker. Waiting...")
+                        for _ in range(300): # Wait up to 60 seconds (300 * 0.2)
+                            await asyncio.sleep(0.2)
+                            # Check cache again
+                            cached = self.cache_manager.get_cached_answer(p_hash)
+                            if cached:
+                                logger.debug("Cache populated while waiting. Returning result.") # Using debug to reduce noise
+                                result_schema.update(cached)
+                                result_schema["status"] = "success"
+                                result_schema["cached"] = True
+                                result_schema["source"] = "cache"
+                                return self._finalize_result(result_schema, start_time)
+                        
+                        # Timeout reached. One last check before giving up.
+                        cached_final = self.cache_manager.get_cached_answer(p_hash)
+                        if cached_final:
+                            logger.info("Cache populated just in time. Returning result.")
+                            result_schema.update(cached_final)
+                            result_schema["status"] = "success"
+                            result_schema["cached"] = True
+                            result_schema["source"] = "cache"
+                            return self._finalize_result(result_schema, start_time)
+
+                        # Still nothing? Fail Open.
+                        logger.warning(f"Timeout waiting for lock on {p_hash[:8]}. Proceeding to compute locally (Fail Open).")
+                        # We proceed to solve it ourselves. lock_acquired is False, so we won't release the other worker's lock.
+            
+            # Use try/finally to ensure lock release if we acquired it
+            try:
+                # ... existing logic follows ...
+                pass 
+            except Exception:
+                raise
+            # Note: The 'finally' block to release lock needs to wrap the entire solve process.
+            # Since I can't easily wrap the *rest* of the function without indenting everything, 
+            # I will release the lock explicitly before return points or use a flag.
+            # Actually, to generate correct code structure with replacement, I need to wrap the rest.
+            # ALTERNATIVE: I will insert the 'acquire' here, and handling 'release' might be tricky with ReplaceFileContent if I don't re-indent headers.
+            # Strategy: I'll use the 'lock' only for the Heavy LLM parts?
+            # No, strictly strictly, I should wrap. 
+            # Let's simple release the lock at the end of the function.
+            # I'll enable a flag `self.has_lock = True` if I acquired it. And in `finally` of the whole block I release it.
+            # Wait, `process_problem` has a big `try/except`. I can use that.
+            
+
+            # 3. Classification
+            has_image = bool(processed.metadata.get("image_data"))
+            image_data = processed.metadata.get("image_data")
+            intent = self._classify_intent(processed.cleaned_content, has_image)
+            
+            result_schema["problem_type"] = intent.value
+            logger.info(f"Classified intent: {intent.value} | Input: {processed.cleaned_content[:50]}...")
+
+            # 4. Routing & Execution
+            
+            # --- ROUTE: VISION ---
+            if intent == IntentType.VISION:
+                # Analyze Image
+                vision_res = await asyncio.to_thread(self.vision_analyzer.analyze, image_data)
+                
+                if vision_res.get("math_detected"):
+                    # Extracted math text -> Solve Symbolically
+                    math_text = vision_res.get("latex", "") or vision_res.get("text", "")
+                    logger.info(f"Vision detected math: {math_text}")
+                    
+                    sym_res = await asyncio.to_thread(self.symbolic_solver.solve, math_text)
+                    if sym_res.get("status") == "success":
+                         self._populate_success(result_schema, sym_res, "vision+symbolic")
+                         result_schema["steps"] = ["Analyzed image with YOLO/OCR", f"Extracted: {math_text}"] + sym_res.get("steps", [])
+                    else:
+                        # Fallback to Gemini with Image
+                        gem_res = await self._safe_llm_call(processed.cleaned_content, image_data=image_data)
+                        self._populate_success(result_schema, gem_res, "vision+gemini")
+                else:
+                    # General Image -> Gemini
+                    gem_res = await self._safe_llm_call(processed.cleaned_content, image_data=image_data)
+                    self._populate_success(result_schema, gem_res, "gemini-vision")
+
+            # --- ROUTE: MATH (Symbolic/Arithmetic) ---
+            elif intent in [IntentType.SYMBOLIC_MATH, IntentType.ARITHMETIC]:
+                # Try Symbolic Solver First
+                normalized = self.math_normalizer.normalize(processed.cleaned_content)
+                target = normalized if normalized else processed.cleaned_content
+                
+                sym_res = await asyncio.to_thread(self.symbolic_solver.solve, target)
+                
+                if sym_res.get("status") == "success":
+                    self._populate_success(result_schema, sym_res, "symbolic_solver")
+                else:
+                    # Fallback to Gemini
+                    logger.info("Symbolic solver failed, falling back to Gemini.")
+                    
+                    fallback_prompt = processed.cleaned_content
+                    if user_context_str:
+                        fallback_prompt = f"{user_context_str}\n\nProblem: {processed.cleaned_content}"
+                        
+                    gem_res = await self._safe_llm_call(fallback_prompt)
+                    self._populate_success(result_schema, gem_res, "gemini-fallback")
+
+            # --- ROUTE: SEARCH ---
+            elif intent == IntentType.SEARCH:
+                # Scrape
+                scrape_res = await self.web_scraper.scrape(processed.cleaned_content)
+                context = scrape_res.get("content", "")[:3000] # Limit context
+                
+                # Summarize with Gemini
+                summary_prompt = f"Using this search data: {context}\n\nAnswer: {processed.cleaned_content}"
+                if user_context_str:
+                     summary_prompt = f"{user_context_str}\n\n{summary_prompt}"
+                     
+                gem_res = await self._safe_llm_call(summary_prompt)
+                
+                self._populate_success(result_schema, gem_res, "search+gemini")
+                result_schema["metadata"]["tools_used"].append("web_scraper")
+
+            # --- ROUTE: CONCEPTUAL (General) ---
+            else:
+                # Direct Gemini Call
+                prompt = processed.cleaned_content
+                if user_context_str:
+                     prompt = f"{user_context_str}\n\nProblem: {processed.cleaned_content}"
+                
+                gem_res = await self._safe_llm_call(prompt)
+                self._populate_success(result_schema, gem_res, "gemini-pro")
+
+            # 5. Save & Index
+            if result_schema["status"] == "success":
+                # Save to Redis Cache (CRITICAL for lock waiters!)
+                if settings.ENABLE_CACHE:
+                     self.cache_manager.set_cached_answer(p_hash, result_schema)
+
+                # Save to DB
+                self.db_manager.save_problem(
+                    {"hash": p_hash, "content": processed.cleaned_content}, 
+                    result_schema
+                )
+                # Index
+                if self.similarity_finder and result_schema["answer"]:
+                    self.similarity_finder.index_problem(
+                        processed.cleaned_content,
+                        str(result_schema["answer"]),
+                        {"model": result_schema["metadata"]["model"]}
+                    )
+
+            # Release lock if we acquired it
+            if lock_acquired and self.cache_manager.redis_client:
+                try:
+                    self.cache_manager.redis_client.delete(lock_key)
+                except Exception as e:
+                    logger.warning(f"Failed to release lock {lock_key}: {e}")
+
+            return self._finalize_result(result_schema, start_time)
 
         except Exception as e:
-            logger.error(f"Storage failed: {e}")
+            logger.error(f"Orchestrator Error: {e}")
+            
+            # Release lock on error too
+            if locals().get("lock_acquired") and self.cache_manager.redis_client:
+                 try:
+                    self.cache_manager.redis_client.delete(lock_key)
+                 except Exception as release_err:
+                    logger.warning(f"Failed to release lock {lock_key} in error handler: {release_err}")
 
-        # 7. Return Result
-        result["status"] = "success"
-        result["answer"] = generated_solution
-        result["metadata"]["source"] = "generated"
-        result["metadata"]["latency"] = time.time() - start_time
-        
-        return result
+            result_schema["explanation"] = f"Internal Error: {str(e)}"
+            return self._finalize_result(result_schema, start_time)
+
+    async def _safe_llm_call(self, prompt: str, image_data: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+        """
+        Tries Gemini first. If 429/Resource Exhausted, falls back to local Qwen.
+        """
+        try:
+            return await self.gemini.solve(prompt, image_data, **kwargs)
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                logger.warning(f"Gemini Rate Limit (429) hit. Falling back to local Qwen. Error: {e}")
+                # Fallback to Qwen
+                # Qwen might not support images, so we strip it.
+                try:
+                    return await self.qwen.solve(prompt, image_data=None)
+                except Exception as qwen_error:
+                    logger.error(f"Fallback to Qwen also failed: {qwen_error}")
+                    raise e # Raise original Gemini error if fallback fails to indicate overloaded state.
+            
+            # If not a rate limit error, re-raise immediately
+            raise e
+
+    def _populate_success(self, schema: Dict, source_res: Dict, source_name: str):
+        """Helper to map source result to unified schema."""
+        schema["status"] = "success"
+        schema["source"] = source_name
+        schema["answer"] = source_res.get("final_answer") or source_res.get("content") or source_res.get("text")
+        # Ensure LaTeX
+        schema["answer_latex"] = source_res.get("latex", schema["answer"]) # store latent for UI
+        schema["steps"] = source_res.get("steps", [])
+        if "reasoning" in source_res:
+             schema["explanation"] = source_res["reasoning"]
+        schema["confidence"] = source_res.get("confidence_score", 1.0)
+        schema["metadata"]["model"] = source_res.get("model", "unknown")
+
+    def _finalize_result(self, schema: Dict, start_time: float) -> Dict:
+        """Calculates latency and returns final dict."""
+        schema["metadata"]["latency_ms"] = int((time.time() - start_time) * 1000)
+        return schema

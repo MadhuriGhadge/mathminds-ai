@@ -12,7 +12,7 @@ class VisionAnalyzer:
     and prepares context for Gemini (Qualitative).
     """
 
-    def __init__(self, model_path: str = "yolov8m.pt"):
+    def __init__(self, model_path: str = "yolov8n.pt"):
         """
         Initialize YOLO model.
         Args:
