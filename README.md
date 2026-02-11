@@ -1,6 +1,5 @@
 # MathMinds AI
 
-<<<<<<< HEAD
 **MathMinds AI** is an intelligent analytical web application that leverages cutting-edge AI to help users solve and understand complex mathematical problems. It combines OCR for handwritten math, web scraping for word-problem context, and image analysis for probability/statistics questions — all accessible through an interactive Python-based interface.
 
 ## Final objective
@@ -44,7 +43,7 @@ The final objective is to build **"MathMinds AI,"** an intelligent analytical we
 - Vector embeddings + FAISS / Pinecone / Supabase (for retrieval)
 
 
-## Version1 
+# Version1 
 
 ## Prerequisites
 - Python 3.10+
@@ -78,4 +77,3 @@ run_api.bat
 ```bash
 run_worker.bat
 ```
->>>>>>> 523d4ed (system version1 with caching and UI)
