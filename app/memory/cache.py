@@ -63,7 +63,7 @@ class CacheManager:
             if data:
                 logger.info(f"Cache hit for key: {cache_key}")
                 return json.loads(data)
-            logger.info(f"Cache miss for key: {cache_key}")
+            logger.debug(f"Cache miss for key: {cache_key}")
             return None
         except RedisError as e:
             logger.error(f"Redis error during get operations: {e}")

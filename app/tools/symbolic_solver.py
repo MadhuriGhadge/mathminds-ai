@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, Union
 import sympy
 from sympy.parsing.sympy_parser import parse_expr
 from app.core.math_normalizer import MathIntent
+from app.core.settings import settings
 
 # Try importing wolframalpha, handling if not installed or configured
 try:
@@ -20,7 +21,7 @@ class SymbolicSolver:
     """
 
     def __init__(self, wolfram_app_id: Optional[str] = None):
-        self.wolfram_app_id = wolfram_app_id or os.getenv("WOLFRAM_APP_ID")
+        self.wolfram_app_id = wolfram_app_id or settings.WOLFRAM_APP_ID
         self.wolfram_client = None
         
         logger.info(f"Initializing SymbolicSolver. WolframAppID present: {bool(self.wolfram_app_id)}")

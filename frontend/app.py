@@ -6,8 +6,12 @@ from PIL import Image
 import io
 import os
 import uuid
-import numpy as np
+import time
 from streamlit_drawable_canvas import st_canvas
+from dotenv import load_dotenv
+
+# Load env immediately
+load_dotenv()
 
 # ====================================================
 # Page Config
@@ -20,388 +24,539 @@ st.set_page_config(
 )
 
 # ====================================================
-# Styling
+# Premium Global Styling (Glassmorphism + Typography)
 # ====================================================
 st.markdown("""
 <style>
-div[data-testid="stChatMessageUser"] {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border-radius: 18px 18px 4px 18px;
-    padding: 12px 16px;
-    margin: 8px 0;
-}
-div[data-testid="stChatMessageAssistant"] {
-    background: rgba(255,255,255,0.05);
-    border-left: 3px solid #667eea;
-    border-radius: 18px;
-    padding: 12px 16px;
-    margin: 8px 0;
-}
-.katex { font-size: 1.3em !important; }
+    /* Global Background */
+    .stApp {
+        background: radial-gradient(circle at 10% 20%, rgb(17 24 39) 0%, rgb(10 10 10) 90%);
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background-color: rgba(30, 41, 59, 0.4);
+        backdrop-filter: blur(12px);
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Chat Bubbles */
+    div[data-testid="stChatMessageUser"] {
+        background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+        border-radius: 20px 20px 4px 20px;
+        padding: 1rem 1.5rem;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        border: 1px solid rgba(255,255,255,0.1);
+    }
+    div[data-testid="stChatMessageAssistant"] {
+        background: rgba(31, 41, 55, 0.7);
+        backdrop-filter: blur(10px);
+        border-radius: 20px 20px 20px 4px;
+        padding: 1rem 1.5rem;
+        border: 1px solid rgba(255,255,255,0.05);
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    
+    /* Typography */
+    h1, h2, h3 {
+        color: #f3f4f6;
+        letter-spacing: -0.5px;
+    }
+    p, li {
+        color: #e5e7eb;
+        line-height: 1.6;
+    }
+    
+    /* Canvas Container */
+    .canvas-container {
+        border-radius: 12px;
+        overflow: hidden;
+        border: 2px solid rgba(99, 102, 241, 0.3);
+        box-shadow: 0 0 20px rgba(99, 102, 241, 0.1);
+    }
+
+    /* Badges */
+    .badge {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-right: 0.5rem;
+    }
+    .badge-blue { background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.3); }
+    .badge-purple { background: rgba(168, 85, 247, 0.2); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.3); }
+    .badge-green { background: rgba(34, 197, 94, 0.2); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.3); }
+    
+    /* Buttons */
+    button[kind="primary"] {
+        background: linear-gradient(to right, #4f46e5, #7c3aed);
+        border: none;
+        box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.3);
+        transition: all 0.2s;
+    }
+    button[kind="primary"]:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 8px -1px rgba(79, 70, 229, 0.4);
+    }
+
 </style>
 """, unsafe_allow_html=True)
 
 # ====================================================
-# Constants
+# Config & State
 # ====================================================
-API_URL = "http://localhost:8000/solve"
+API_URL = "http://localhost:8000/solve" # Ensure this matches implementation
 HISTORY_FILE = "chat_history.json"
 
-# ====================================================
-# Utils
-# ====================================================
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-def save_history(data):
-    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-# ====================================================
-# Session State (IMPORTANT PART)
-# ====================================================
 if "chat_sessions" not in st.session_state:
-    st.session_state.chat_sessions = load_history()
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r") as f:
+            st.session_state.chat_sessions = json.load(f)
+    else:
+        st.session_state.chat_sessions = {}
 
 if "active_session_id" not in st.session_state:
     sid = str(uuid.uuid4())
-    st.session_state.chat_sessions[sid] = {"title": "New Chat", "messages": []}
+    st.session_state.chat_sessions[sid] = {"title": "New Session", "messages": [], "created_at": time.time()}
     st.session_state.active_session_id = sid
-    save_history(st.session_state.chat_sessions)
 
-# 🔒 STABLE CANVAS KEY (THIS FIXES YOUR BUG)
-if "canvas_key" not in st.session_state:
-    st.session_state.canvas_key = "main_canvas"
-
-if "show_canvas" not in st.session_state:
-    st.session_state.show_canvas = False
+# Auth State (Mocked for UI demo, replace with real Firebase token logic)
+if "user" not in st.session_state:
+    st.session_state.user = None # {"email": "demo@user.com", "token": "mock_token"}
 
 # ====================================================
-# Helpers
+# Helper Functions
 # ====================================================
-def messages():
-    return st.session_state.chat_sessions[st.session_state.active_session_id]["messages"]
+def save_history():
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(st.session_state.chat_sessions, f, indent=2)
 
-def add_message(role, content, **extra):
-    msg = {"role": role, "content": content}
-    msg.update(extra)
-    st.session_state.chat_sessions[st.session_state.active_session_id]["messages"].append(msg)
-    save_history(st.session_state.chat_sessions)
+def get_active_session():
+    return st.session_state.chat_sessions[st.session_state.active_session_id]
 
-def clear_canvas():
-    # ONLY time we change key
-    st.session_state.canvas_key = f"canvas_{uuid.uuid4()}"
+def add_message(role, content, **kwargs):
+    session = get_active_session()
+    msg = {"role": role, "content": content, "timestamp": time.time()}
+    msg.update(kwargs)
+    session["messages"].append(msg)
+    save_history()
 
-def toggle_canvas_preview():
-    st.session_state.show_canvas = not st.session_state.show_canvas
+def new_chat():
+    sid = str(uuid.uuid4())
+    st.session_state.chat_sessions[sid] = {"title": "New Session", "messages": [], "created_at": time.time()}
+    st.session_state.active_session_id = sid
+    save_history()
+    st.rerun()
 
-# ====================================================
-# Sidebar
-# ====================================================
-with st.sidebar:
-    st.title("🧠 MathMinds AI")
-
-    if st.button("➕ New Chat", use_container_width=True):
-        sid = str(uuid.uuid4())
-        st.session_state.chat_sessions[sid] = {"title": "New Chat", "messages": []}
-        st.session_state.active_session_id = sid
-        save_history(st.session_state.chat_sessions)
+def delete_chat(sid):
+    if sid in st.session_state.chat_sessions:
+        del st.session_state.chat_sessions[sid]
+        if st.session_state.active_session_id == sid:
+            # Switch to another or create new
+            if st.session_state.chat_sessions:
+                 st.session_state.active_session_id = list(st.session_state.chat_sessions.keys())[0]
+            else:
+                 new_chat()
+        save_history()
         st.rerun()
 
-    st.divider()
-    model_choice = st.radio("Model", ["Standard (Flash)", "Advanced (Pro)"])
-
-    # --- State Init ---
-    if "deleted_session" not in st.session_state:
-        st.session_state.deleted_session = None
-
-    # --- Search ---
-    search_query = st.text_input("🔍 Search chats", placeholder="Type to filter...", label_visibility="collapsed")
-    
-    # --- Undo Logic ---
-    if st.session_state.deleted_session:
-        col_undo, _ = st.columns([0.8, 0.2])
-        with col_undo:
-            if st.button("↩️ Undo Delete", type="secondary", use_container_width=True):
-                # Restore
-                deleted = st.session_state.deleted_session
-                st.session_state.chat_sessions[deleted["id"]] = deleted["data"]
-                st.session_state.active_session_id = deleted["id"]
-                st.session_state.deleted_session = None
-                save_history(st.session_state.chat_sessions)
-                st.toast("Chat restored! 🎉")
-                st.rerun()
-
-    st.divider()
-    
-    # --- Sorting & Filtering ---
-    # 1. Filter
-    all_sessions = []
-    for sid, s in st.session_state.chat_sessions.items():
-        # Default pinned to False if missing
-        if "pinned" not in s: 
-            s["pinned"] = False
-            
-        if not search_query or (search_query.lower() in s["title"].lower()):
-            all_sessions.append((sid, s))
-    
-    # 2. Sort: Pinned first, then by insertion order (reversed)
-    # Python dicts preserve insertion order (lifo for reverse)
-    # We want pinned items at top, staying in their relative order, then unpinned.
-    # Actually, simplest is two lists.
-    pinned_sessions = [x for x in all_sessions if x[1]["pinned"]]
-    regular_sessions = [x for x in all_sessions if not x[1]["pinned"]]
-    
-    # Reverse regular so new is top (if we assume dict keys are chronologically increasing or insertion order)
-    # Since we are iterating dict items, it's insertion order.
-    regular_sessions = regular_sessions[::-1] 
-    pinned_sessions = pinned_sessions[::-1] # Newest pinned top too
-    
-    sorted_display = pinned_sessions + regular_sessions
-
-    st.subheader("History")
-
-    for sid, s in sorted_display:
-        is_active = (sid == st.session_state.active_session_id)
+# ====================================================
+# Login Screen (Simple Overlay)
+# ====================================================
+def login_screen():
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.write("")
+        st.write("")
+        st.markdown("""
+        <div style="text-align: center; padding: 4rem; background: rgba(255,255,255,0.05); border-radius: 20px; border: 1px solid rgba(255,255,255,0.1);">
+            <h1>🧠 MathMinds AI</h1>
+            <p style="color: #9ca3af;">Your intelligent quantitative assistant.</p>
+        </div>
+        """, unsafe_allow_html=True)
         
-        # --- Active Session Rendering ---
-        if is_active:
-            # Inline Rename
-            with st.container():
-                col_mark, col_input = st.columns([0.15, 0.85])
-                with col_mark:
-                    st.write("👉")
-                with col_input:
-                    new_title = st.text_input(
-                        "Rename", 
-                        value=s["title"], 
-                        key=f"rename_{sid}", 
-                        label_visibility="collapsed"
-                    )
-                    if new_title != s["title"]:
-                        st.session_state.chat_sessions[sid]["title"] = new_title
-                        save_history(st.session_state.chat_sessions)
-                        st.rerun()
-            
-            # Action Buttons Row
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                # Pin Toggle
-                pin_icon = "📍" if s["pinned"] else "📌"
-                if st.button(pin_icon, key=f"pin_{sid}", help="Pin/Unpin"):
-                    st.session_state.chat_sessions[sid]["pinned"] = not st.session_state.chat_sessions[sid]["pinned"]
-                    save_history(st.session_state.chat_sessions)
-                    st.rerun()
-            with c2:
-                # Delete Popover
-                with st.popover("🗑️", help="Delete"):
-                    st.write("Confirm delete?")
-                    if st.button("Yes, Delete", key=f"confirm_del_{sid}"):
-                        # Save for undo
-                        st.session_state.deleted_session = {"id": sid, "data": st.session_state.chat_sessions[sid]}
-                        
-                        # Delete
-                        del st.session_state.chat_sessions[sid]
-                        
-                        # Switch active
-                        if st.session_state.chat_sessions:
-                            st.session_state.active_session_id = list(st.session_state.chat_sessions.keys())[-1]
+        
+        tab_login, tab_signup = st.tabs(["Login", "Sign Up"])
+        
+        with tab_login:
+            with st.form("login_form"):
+                email = st.text_input("Email", placeholder="student@university.edu")
+                password = st.text_input("Password", type="password")
+                
+                submitted = st.form_submit_button("Sign In", use_container_width=True)
+                if submitted:
+                    if email and password:
+                        api_key = os.getenv("FIREBASE_WEB_API_KEY")
+                        if not api_key:
+                            st.error("Missing FIREBASE_WEB_API_KEY in .env")
                         else:
-                            # Create new if clean slate
-                            new_id = str(uuid.uuid4())
-                            st.session_state.chat_sessions[new_id] = {"title": "New Chat", "messages": []}
-                            st.session_state.active_session_id = new_id
-                        
-                        save_history(st.session_state.chat_sessions)
-                        st.toast("Chat deleted. Undo available!")
-                        st.rerun()
+                            try:
+                                # Firebase Identity Toolkit API - Login
+                                auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
+                                payload = {"email": email, "password": password, "returnSecureToken": True}
+                                r = requests.post(auth_url, json=payload)
+                                
+                                if r.status_code == 200:
+                                    auth_data = r.json()
+                                    st.session_state.user = {
+                                        "email": auth_data["email"], 
+                                        "token": auth_data["idToken"], 
+                                        "uid": auth_data["localId"]
+                                    }
+                                    st.success(f"Welcome back, {auth_data['email']}!")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                else:
+                                    err_msg = r.json().get("error", {}).get("message", "Login Failed")
+                                    st.error(f"Login Failed: {err_msg}")
+                            except Exception as e:
+                                st.error(f"Connection Error: {e}")
+                    else:
+                        st.error("Please enter email and password.")
 
-        # --- Inactive Session Rendering ---
-        else:
-            name_display = f"{'📌 ' if s['pinned'] else ''}{s['title']}"
-            if st.button(name_display, key=f"btn_{sid}", use_container_width=True):
-                st.session_state.active_session_id = sid
-                st.rerun()
+        with tab_signup:
+            with st.form("signup_form"):
+                new_email = st.text_input("New Email", placeholder="new@student.edu")
+                new_password = st.text_input("New Password", type="password")
+                confirm_password = st.text_input("Confirm Password", type="password")
+                
+                signup_submitted = st.form_submit_button("Create Account", use_container_width=True)
+                
+                if signup_submitted:
+                    if new_email and new_password:
+                        if new_password != confirm_password:
+                            st.error("Passwords do not match!")
+                        else:
+                            api_key = os.getenv("FIREBASE_WEB_API_KEY")
+                            if not api_key:
+                                st.error("Missing FIREBASE_WEB_API_KEY in .env")
+                            else:
+                                try:
+                                    # Firebase Identity Toolkit API - Sign Up
+                                    auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}"
+                                    payload = {"email": new_email, "password": new_password, "returnSecureToken": True}
+                                    r = requests.post(auth_url, json=payload)
+                                    
+                                    if r.status_code == 200:
+                                        auth_data = r.json()
+                                        st.session_state.user = {
+                                            "email": auth_data["email"], 
+                                            "token": auth_data["idToken"], 
+                                            "uid": auth_data["localId"]
+                                        }
+                                        st.success(f"Account Created! Welcome, {auth_data['email']}!")
+                                        time.sleep(0.5)
+                                        st.rerun()
+                                    else:
+                                        err_msg = r.json().get("error", {}).get("message", "Sign Up Failed")
+                                        st.error(f"Sign Up Failed: {err_msg}")
+                                except Exception as e:
+                                    st.error(f"Connection Error: {e}")
+                    else:
+                        st.error("Please fill all fields.")
+        
+        st.markdown("<p style='text-align: center; font-size: 0.8rem; color: #6b7280;'>Powered by Gemini 1.5 Pro & SymPy</p>", unsafe_allow_html=True)
 
+if not st.session_state.user:
+    login_screen()
+    st.stop() # Stop rendering the rest until logged in
 
 # ====================================================
-# Main UI
+# Main App Layout
 # ====================================================
-st.markdown("### 🎓 MathMinds AI")
-st.caption("Ask, upload, or draw a math problem")
 
 # ====================================================
-# Render Chat
+# Main App Logic
 # ====================================================
-for m in messages():
-    avatar = "👤" if m["role"] == "user" else "🤖"
-    with st.chat_message(m["role"], avatar=avatar):
-        if m.get("metadata"):
-            meta = m["metadata"]
-            source = meta.get("source", "unknown")
-            model = meta.get("model_used", "unknown")
-            latency = meta.get("latency", 0)
+
+def profile_interface():
+    st.title("👤 User Profile")
+    st.markdown("Customize your MathMinds experience.")
+    
+    # Fetch current profile
+    headers = {"Authorization": f"Bearer {st.session_state.user['token']}"}
+    
+    # Use session state to avoid re-fetching on every rerun if possible, 
+    # but for simplicity we fetch or check state
+    if "profile_data" not in st.session_state:
+        try:
+            r = requests.get(f"{API_URL.replace('/solve', '')}/users/profile", headers=headers)
+            if r.status_code == 200:
+                st.session_state.profile_data = r.json()
+            else:
+                st.error("Failed to load profile.")
+                st.session_state.profile_data = {}
+        except Exception as e:
+            st.error(f"Connection error: {e}")
+            st.session_state.profile_data = {}
             
-            badges = []
-            if source == "deterministic":
-                badges.append(f"⚡ **Deterministic** ({model})")
-            elif source == "cache":
-                badges.append("💾 **Cache Hit**")
-            elif source == "generated":
-                badges.append(f"🤖 **AI Generated** ({model})")
-                
-            if latency:
-                badges.append(f"⏱️ **{latency:.2f}s**")
-                
-            if badges:
-                st.caption(" | ".join(badges))
-
-        st.markdown(m["content"])
-        if m.get("image_data"):
-            st.image(base64.b64decode(m["image_data"]), width=200)
-        if m.get("reasoning"):
-            with st.expander("Steps"):
-                st.markdown(m["reasoning"])
-
-# ====================================================
-# Input Processing
-# ====================================================
-def process_input(text, image_b64=None, preview=None):
-    with st.chat_message("user", avatar="👤"):
-        if text:
-            st.markdown(text)
-        if preview:
-            st.image(preview, width=200)
-
-    add_message("user", text or "Analyze image", image_data=image_b64)
-
-    with st.chat_message("assistant", avatar="🤖"):
-        with st.spinner("Thinking..."):
+    data = st.session_state.profile_data
+    
+    with st.form("profile_form"):
+        display_name = st.text_input("Display Name", value=data.get("display_name", ""))
+        math_level = st.selectbox(
+            "Math Proficiency Level",
+            ["High School", "Undergraduate", "Graduate", "Researcher"],
+            index=["High School", "Undergraduate", "Graduate", "Researcher"].index(data.get("math_level", "Undergraduate")) if data.get("math_level") in ["High School", "Undergraduate", "Graduate", "Researcher"] else 1
+        )
+        
+        current_interests = data.get("interests", [])
+        all_interests = ["Algebra", "Calculus", "Geometry", "Statistics", "Physics", "Computer Science", "Finance"]
+        interests = st.multiselect("Areas of Interest", all_interests, default=[i for i in current_interests if i in all_interests])
+        
+        submitted = st.form_submit_button("Save Profile", use_container_width=True, type="primary")
+        
+        if submitted:
             payload = {
-                "text": text,
-                "image": image_b64,
-                "model_preference": "reasoning" if "Advanced" in model_choice else "fast"
+                "display_name": display_name,
+                "math_level": math_level,
+                "interests": interests
             }
             try:
-                r = requests.post(API_URL, json=payload, timeout=120)
-                data = r.json()
-
-                if data["status"] != "success":
-                    st.error(data.get("error", "Error"))
-                    return
-
-                ans = data["answer"]
-                if ans.get("latex"):
-                    st.latex(ans["latex"])
-
-                # Metadata badges
-                metadata = data.get("metadata", {})
-                source = metadata.get("source", "unknown")
-                model = metadata.get("model_used", "unknown")
-                latency = metadata.get("latency", 0)
-                
-                # Format badges
-                badges = []
-                if source == "deterministic":
-                    badges.append(f"⚡ **Deterministic** ({model})")
-                elif source == "cache":
-                    badges.append("💾 **Cache Hit**")
+                r = requests.post(f"{API_URL.replace('/solve', '')}/users/profile", json=payload, headers=headers)
+                if r.status_code == 200:
+                    st.success("Profile updated successfully!")
+                    st.session_state.profile_data = payload # Update local cache
+                    time.sleep(1)
+                    st.rerun()
                 else:
-                    badges.append(f"🤖 **AI Generated** ({model})")
-                
-                badges.append(f"⏱️ **{latency:.2f}s**")
-                
-                st.markdown(" | ".join(badges))
-                
-                st.markdown(f"**Answer:**\n\n> {ans['final_answer']}")
-
-                with st.expander("Steps"):
-                    st.markdown(ans.get("reasoning", ""))
-
-                add_message(
-                    "assistant",
-                    f"**Answer:**\n\n> {ans['final_answer']}",
-                    reasoning=ans.get("reasoning", ""),
-                    metadata=metadata # Store for history
-                )
+                    st.error(f"Update failed: {r.text}")
             except Exception as e:
-                st.error(f"Error: {e}")
-                add_message("assistant", f"Error: {e}")
+                st.error(f"Error saving: {e}")
 
-# ====================================================
-# Tabs
-# ====================================================
-tab_upload, tab_draw = st.tabs(["📤 Upload", "✏️ Draw"])
+def chat_interface():
+    # --- Active Chat Interface ---
+    if st.session_state.active_session_id not in st.session_state.chat_sessions:
+         new_chat() # fallback
+         
+    st.title(st.session_state.chat_sessions[st.session_state.active_session_id]["title"])
 
-# ---------------- Upload ----------------
-with tab_upload:
-    uploaded = st.file_uploader("Upload image", type=["png", "jpg", "jpeg"])
-    if uploaded and st.button("✨ Analyze Upload", use_container_width=True):
-        b64 = base64.b64encode(uploaded.getvalue()).decode()
-        process_input("Solve this image problem", b64, uploaded)
+    # 1. Render Chat History
+    session = get_active_session()
+    for msg in session["messages"]:
+        if msg["role"] == "user":
+            with st.chat_message("user", avatar="👤"):
+                if msg.get("image_data"):
+                    st.image(base64.b64decode(msg["image_data"]), width=300)
+                st.write(msg["content"])
+        else:
+            with st.chat_message("assistant", avatar="🤖"):
+                # Metadata Badges
+                meta = msg.get("metadata", {})
+                if meta:
+                    badges_html = ""
+                    if meta.get("source") == "deterministic":
+                        badges_html += '<span class="badge badge-green">⚡ SYMBOLIC</span>'
+                    elif meta.get("source") == "cache":
+                        badges_html += '<span class="badge badge-blue">💾 CACHED</span>'
+                    elif meta.get("source") == "agent":
+                        badges_html += '<span class="badge badge-purple">🤖 AGENT</span>'
+                    
+                    model = meta.get("model_used")
+                    if model:
+                       badges_html += f'<span class="badge" style="background: rgba(255,255,255,0.1);">{model}</span>'
+                    
+                    st.markdown(badges_html, unsafe_allow_html=True)
+                
+                # Content
+                content = msg["content"]
+                
+                # If complex reasoning exists
+                reasoning = msg.get("reasoning")
+                if reasoning:
+                    with st.expander("Show Reasoning Steps"):
+                        st.markdown(reasoning)
+                
+                # Final Answer
+                if isinstance(content, dict) and "final_answer" in content:
+                    st.markdown(f"**Answer:**\n\n> {content['final_answer']}")
+                else:
+                    st.markdown(content)
+
+
+    # 2. Input Area (Tabs for Text / Image / Canvas)
+    st.divider()
+    tab_text, tab_draw, tab_upload = st.tabs(["💬 Text", "✏️ Draw", "📤 Upload"])
+
+    prompt = None
+    image_b64 = None
+
+    with tab_text:
+        prompt = st.chat_input("Ask a math question...")
+
+    with tab_draw:
+        col_canvas, col_controls = st.columns([3, 1])
+        with col_canvas:
+            # Drawing Canvas
+            if "canvas_key" not in st.session_state: st.session_state.canvas_key = "main_canvas"
+            
+            canvas_result = st_canvas(
+                stroke_width=3,
+                stroke_color="#FFFFFF",
+                background_color="#000000",
+                height=300,
+                width=600,
+                drawing_mode="freedraw",
+                key=st.session_state.canvas_key,
+            )
+        with col_controls:
+            st.caption("Controls")
+            if st.button("Clear Canvas"):
+                st.session_state.canvas_key = f"canvas_{uuid.uuid4()}"
+                st.rerun()
+            
+            if st.button("Solve Drawing", type="primary"):
+                if canvas_result.image_data is not None:
+                    # Convert to b64
+                    img = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
+                    # Composite over black
+                    bg = Image.new("RGB", img.size, (0, 0, 0))
+                    bg.paste(img, mask=img.split()[3])
+                    
+                    buf = io.BytesIO()
+                    bg.save(buf, format="PNG")
+                    image_b64 = base64.b64encode(buf.getvalue()).decode()
+                    prompt = "Solve this handwritten math problem."
+
+    with tab_upload:
+        uploaded = st.file_uploader("Upload Image", type=["png", "jpg"])
+        if uploaded and st.button("Analyze Image"):
+            image_b64 = base64.b64encode(uploaded.getvalue()).decode()
+            prompt = "Analyze this image."
+
+
+    # 3. Processing Logic
+    if prompt:
+        # Optimistic UI Update
+        add_message("user", prompt, image_data=image_b64)
         st.rerun()
 
-# ---------------- Draw ----------------
-with tab_draw:
-    c1, c2, c3, c4, c5 = st.columns(5)
+    # Check if last message was user, trigger AI response
+    if session["messages"] and session["messages"][-1]["role"] == "user":
+        last_msg = session["messages"][-1]
+        
+        with st.chat_message("assistant", avatar="🤖"):
+            with st.spinner("Agent is thinking... (Calling tools)"):
+                try:
+                    # Payload
+                    payload = {
+                        "text": last_msg["content"],
+                        "image": last_msg.get("image_data"),
+                        "model_preference": "agent",
+                        "session_id": st.session_state.active_session_id
+                    }
+                    
+                    # HEADERS with Auth
+                    headers = {}
+                    if st.session_state.user:
+                         headers["Authorization"] = f"Bearer {st.session_state.user['token']}"
+                    
+                    response = requests.post(API_URL, json=payload, headers=headers, timeout=120)
+                    data = response.json()
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        if data.get("status") == "success":
+                            # Standardize answer extraction
+                            answer_raw = data.get("answer")
+                            content_to_save = ""
+                            
+                            if isinstance(answer_raw, dict):
+                                 content_to_save = answer_raw.get("final_answer") or answer_raw.get("text") or str(answer_raw)
+                            else:
+                                 content_to_save = str(answer_raw)
+                            
+                            # Use top-level explanation from schema
+                            explanation = data.get("explanation")
+                            
+                            add_message(
+                                "assistant", 
+                                content_to_save, 
+                                reasoning=explanation,
+                                metadata=data.get("metadata"),
+                                steps=data.get("steps") # New field
+                            )
+                            st.rerun()
+                        else:
+                            error_msg = data.get("error", "Unknown error")
+                            st.error(f"API Error: {error_msg}")
+                            add_message("assistant", f"⚠️ Error: {error_msg}")
+                            st.rerun() # Ensure we close the turn
+                    else:
+                        st.error(f"Server Error: {response.status_code}")
+                        # Try to parse error details
+                        try:
+                            err_data = response.json()
+                            err_msg = err_data.get("error", "Unknown Server Error")
+                        except:
+                            err_msg = f"HTTP {response.status_code}"
+                        
+                        add_message("assistant", f"⚠️ Server Error: {err_msg}")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Connection Failed: {e}")
+                    # CRITICAL FIX: Add error message to history to stop retry loop
+                    add_message("assistant", f"❌ Connection Failed: {str(e)}")
+                    st.rerun()
 
-    with c1:
-        mode = st.selectbox("Tool", ["freedraw", "line", "rect", "circle", "transform"])
-    with c2:
-        width = st.slider("Brush", 1, 25, 6)
-    with c3:
-        color = st.color_picker("Color", "#FFFFFF")
-    with c4:
-        st.button("🗑️ Clear", on_click=clear_canvas, use_container_width=True)
-    with c5:
-        st.button(
-            "👁️ Show" if not st.session_state.show_canvas else "🙈 Hide",
-            on_click=toggle_canvas_preview,
-            use_container_width=True
+# --- Initialize View State ---
+if "current_view" not in st.session_state:
+    st.session_state.current_view = "Chat"
+
+# --- Sidebar (History & Settings) ---
+with st.sidebar:
+    st.markdown("### 🧠 MathMinds")
+    
+    st.write(f"Logged in as **{st.session_state.user['email']}**")
+    
+    # Navigation
+    view = st.radio("Navigation", ["Chat", "Profile"], index=0 if st.session_state.current_view == "Chat" else 1)
+    if view != st.session_state.current_view:
+        st.session_state.current_view = view
+        st.rerun()
+
+    if st.button("Sign Out", type="secondary"):
+        st.session_state.user = None
+        st.rerun()
+        
+    st.divider()
+    
+    if st.session_state.current_view == "Chat":
+        if st.button("➕ New Chat", use_container_width=True, type="primary"):
+            new_chat()
+            
+        st.markdown("#### History")
+        
+        # Sort by recent
+        sorted_sids = sorted(
+            st.session_state.chat_sessions.keys(), 
+            key=lambda k: st.session_state.chat_sessions[k].get("created_at", 0), 
+            reverse=True
         )
+        
+        for sid in sorted_sids:
+            sess = st.session_state.chat_sessions[sid]
+            title = sess.get("title", "Untitled")
+            isActive = (sid == st.session_state.active_session_id)
+            
+            col_nav, col_del = st.columns([0.85, 0.15])
+            with col_nav:
+                if st.button(f"{'📍 ' if isActive else ''}{title}", key=sid, use_container_width=True):
+                       st.session_state.active_session_id = sid
+                       st.rerun()
+            with col_del:
+                if isActive:
+                     if st.button("🗑️", key=f"del_{sid}"):
+                          delete_chat(sid)
 
-    # 🔥 CANVAS (NOW ALWAYS RENDERS)
-    canvas = st_canvas(
-        key=st.session_state.canvas_key,
-        height=400,
-        width=1000,
-        drawing_mode=mode,
-        stroke_width=width,
-        stroke_color=color,
-        background_color="#1E1E1E",
-        update_streamlit=True
-    )
+# --- Router ---
+if st.session_state.current_view == "Profile":
+    profile_interface()
+else:
+    chat_interface()
 
-    # Preview Section
-    if st.session_state.show_canvas and canvas.image_data is not None:
-        with st.expander("Canvas Preview (what AI sees)", expanded=True):
-            st.image(
-                canvas.image_data,
-                caption="RGBA Canvas Output",
-                width="stretch"
-            )
 
-    if st.button("✨ Solve Sketch", use_container_width=True):
-        if canvas.image_data is None:
-            st.warning("Draw something first")
-        else:
-            img = Image.fromarray(canvas.image_data.astype("uint8"), "RGBA")
-            bg = Image.new("RGB", img.size, (0, 0, 0))
-            bg.paste(img, mask=img.split()[3])
-
-            buf = io.BytesIO()
-            bg.save(buf, format="PNG")
-
-            b64 = base64.b64encode(buf.getvalue()).decode()
-            process_input("Solve this drawn problem", b64, bg)
-            st.rerun()
-
-# ====================================================
-# Text Input
-# ====================================================
-if prompt := st.chat_input("Ask your math question..."):
-    process_input(prompt)
-    st.rerun()

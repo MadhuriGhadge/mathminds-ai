@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, Field, model_validator
 
 class SolveRequest(BaseModel):
@@ -38,8 +38,15 @@ class SolveResponse(BaseModel):
     """
     Response model for the /solve endpoint.
     """
+    request_id: str
     status: str = Field(..., description="Status of the request (success/error).")
-    answer: Optional[Dict[str, Any]] = Field(None, description=" Structured answer from the AI.")
+    problem_type: str = "unknown"
+    source: str = "unknown"
+    answer: Any = Field(None, description="The structured answer from the AI. Can be str, float, or dict.")
+    steps: List[str] = Field(default_factory=list, description="A list of steps taken to solve the problem.")
+    explanation: Optional[str] = Field(None, description="A detailed explanation of the solution.")
+    confidence: float = Field(0.0, description="Confidence score of the answer.")
+    cached: bool = Field(False, description="Indicates if the response was served from cache.")
     error: Optional[str] = Field(None, description="Error message if status is error.")
     error_code: Optional[str] = Field(None, description="Error code if status is error.")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata about the processing.")

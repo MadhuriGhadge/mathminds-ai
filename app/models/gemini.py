@@ -16,6 +16,9 @@ from app.models.base import BaseModel
 # Configure logging
 logger = logging.getLogger(__name__)
 
+# Global Semaphore to prevent rate limit exhaustion
+_GEMINI_LOCK = asyncio.Semaphore(1)
+
 class GeminiModel(BaseModel):
     """
     Wrapper for the Gemini API using the new google-genai SDK (v1.0+).
@@ -75,24 +78,22 @@ class GeminiModel(BaseModel):
                     pass
             return None
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_random_exponential(multiplier=1, max=60),
-        retry=retry_if_exception_type(Exception),
-        reraise=True
-    )
+    # Removed @retry to prevent 429 stampedes
     async def solve(self, prompt: str, image_data: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
-        Solves a math problem using Gemini with timeout protection.
+        Solves a math problem using Gemini with timeout protection and concurrency control.
         """
         model_name = kwargs.get("model_name")
-        return await self.breaker.call(
-            self._solve_with_timeout,
-            prompt,
-            image_data,
-            model_name,
-            timeout=60
-        )
+        
+        # Global Concurrency Lock (One request at a time)
+        async with _GEMINI_LOCK:
+            return await self.breaker.call(
+                self._solve_with_timeout,
+                prompt,
+                image_data,
+                model_name,
+                timeout=60
+            )
 
     async def _solve_with_timeout(self, prompt: str, image_data: Optional[str] = None, model_name: Optional[str] = None, timeout: int = 60) -> Dict[str, Any]:
         try:
@@ -185,4 +186,45 @@ class GeminiModel(BaseModel):
 
         except Exception as e:
             logger.error(f"Gemini API call failed: {e}")
+            raise
+    async def generate_with_tools(
+        self, 
+        prompt: str, 
+        tools: Optional[list] = None, 
+        history: Optional[list] = None,
+        tool_config: Optional[Dict] = None
+    ) -> Any:
+        """
+        Generates content using Gemini with tool support (Function Calling).
+        Returns the raw response object to let Orchestrator handle tool calls.
+        """
+        target_model = "gemini-2.5-flash" # Tools work well with Flash and it is generally available
+        
+        try:
+            # Convert history to SDK format if needed, or rely on client.chats.create
+            # For now, we'll use a stateless generate_content with history in contents if simple,
+            # or better: use client.chats for multi-turn.
+            
+            # Let's use the efficient generate_content with a list of messages
+            contents = []
+            
+            if history:
+                contents.extend(history)
+            
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
+
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model=target_model,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    tools=tools,
+                    tool_config=tool_config,
+                    temperature=0.0 # Strict for tools
+                )
+            )
+            return response
+
+        except Exception as e:
+            logger.error(f"Gemini Tool Generation failed: {e}")
             raise
