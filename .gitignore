@@ -70,3 +70,17 @@ celerybeat.pid
 
 *.json
 !example.json
+
+
+yolov8n.pt
+*.pt
+*.onnx
+*.h5
+*.ckpt
+
+# Large model files
+yolov8n.pt
+*.pt
+*.onnx
+*.h5
+*.ckpt
