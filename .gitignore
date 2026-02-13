@@ -66,3 +66,7 @@ celerybeat.pid
 # IDEs
 .vscode/
 .idea/
+
+
+*.json
+!example.json
