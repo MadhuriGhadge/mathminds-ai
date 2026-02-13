@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: mathminds_api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MONGO_URI=mongodb://mongo:27017/mathminds
+    depends_on:
+      - redis
+      - mongo
+    networks:
+      - mathminds_net
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: mathminds_worker
+    command: celery -A app.worker.celery_app worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - MONGO_URI=mongodb://mongo:27017/mathminds
+    depends_on:
+      - redis
+      - mongo
+    networks:
+      - mathminds_net
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n
+    container_name: mathminds_n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - mathminds_net
+    restart: unless-stopped
+
+  redis:
+    image: redis:alpine
+    container_name: mathminds_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - mathminds_net
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:latest
+    container_name: mathminds_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - mathminds_net
+    restart: unless-stopped
+
+networks:
+  mathminds_net:
+    driver: bridge
+
+volumes:
+  redis_data:
+  mongo_data:
+  n8n_data:

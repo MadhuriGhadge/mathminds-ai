@@ -1,43 +1,77 @@
-# MathMinds AI
 
-**MathMinds AI** is an intelligent analytical web application that leverages cutting-edge AI to help users solve and understand complex mathematical problems. It combines OCR for handwritten math, web scraping for word-problem context, and image analysis for probability/statistics questions — all accessible through an interactive Python-based interface.
+### The AI Math Agent (Google ADK & Gemini)
+The heart of the system, powered by the **Google Agent Development Kit (ADK)** and **Gemini API**. The agent acts as an intelligent orchestrator, analyzing the user's request and deciding which specialized tool (or combination of tools) is best suited for the task.
 
-## Final objective
-The final objective is to build **"MathMinds AI,"** an intelligent analytical web application that leverages cutting-edge AI to help users solve and understand complex mathematical problems. This application will be able to interpret handwritten equations from images, scrape data from the web to solve word problems, and even analyze images to answer questions about probability and statistics, all through an interactive Python-based interface.
+It has access to a powerful set of tools:
 
-## Key features (planned / in progress)
-- **Handwritten equation recognition**  
-  - Upload an image of handwritten math; the system recognizes symbols and converts them to executable math expressions (OCR ➜ parser ➜ solver).
-- **Word-problem understanding with web augmentation**  
-  - Scrape relevant web sources or reference material when the problem requires external data or context, then integrate findings into the solution pipeline.
-- **Image-based probability & statistics analysis**  
-  - Analyze charts, tables, or images and answer related probability/statistics questions.
-- **Interactive Python interface**  
-  - An interface (FastAPI backend + Streamlit/Gradio frontend) that lets users run examples, inspect steps, and explore the reasoning.
-- **Explainable solutions**  
-  - Provide step-by-step derivations and visualizations (where applicable) so users can learn the process, not just the final answer.
-- **Embeddings & semantic search**  
-  - Use vector embeddings for retrieval of relevant examples, formulas, or help docs to assist in solving complex problems.
-- **Persistence & state**  
-  - Store user sessions, problem states, solution logs and allow users to revisit and refine earlier problems.
+*   **Image Interpreter**: Takes an image of a handwritten or printed equation and converts it into a machine-readable LaTeX string.
+*   **Mathematical Vision (Gemini & Ultralytics Tools)**: Applies mathematical reasoning to visual inputs.
+    *   *Quantitative Analysis (YOLO)*: For probability/statistics (e.g., counting objects).
+    *   *Qualitative Analysis (Gemini)*: For interpreting graphs, charts, or geometric diagrams.
+*   **Web Data Scraper (Playwright/Selenium)**: Scrapes specific data from websites for word problems requiring real-world context (e.g., financial rates, weather data).
+*   **Problem Solver & Concept Explainer**: The core reasoning engine that performs calculations and formulates clear, step-by-step explanations.
+*   **Similar Problem Finder (Supabase VectorDB)**: Finds conceptually similar problems the user has solved in the past to aid in learning and retention.
 
-## Architecture
-- **Frontend**: Streamlit or Gradio for interactive demos; future web UI for production.
-- **Backend**: FastAPI serving endpoints for OCR, solver, web-scraping, image analysis, and retrieval.
-- **DB / Storage**: MongoDB for session/state and metadata; vector DB (or embeddings layer) for semantic retrieval.
-- **AI components**:
-  - OCR + Math parser (e.g., Tesseract + custom tokenizer / LaTeX converter)
-  - Language model + prompt pipelines for understanding word problems and code generation
-  - Embedding generator (OpenAI or local) and approximate nearest neighbors for retrieval
-  - Small numerical solver modules (sympy, numpy, scipy) for symbolic and numeric solutions
-- **Dev tooling**: Git, Docker, CI for tests and deploy, unit/integration tests for solver correctness.
+###  User Management & Data
+*   **Firebase Auth**: Secure API communication.
+*   **MongoDB**: Stores user problem history.
+*   **Scalable Backend**: **Celery** and **Redis** manage long-running AI and scraping tasks.
 
-## Tech stack
-- Python 3.10+  
-- FastAPI (backend)  
-- Streamlit / Gradio (frontend prototypes)  
-- MongoDB + PyMongo (state & logs)  
-- SymPy / NumPy / SciPy (math solving)  
-- OCR tooling (Tesseract / ML-based OCR)  
-- LLM providers or local models (for natural language understanding and code generation)  
-- Vector embeddings + FAISS / Pinecone / Supabase (for retrieval)
+---
+
+## Tech Stack
+
+*   **Language**: Python 3.10+
+*   **Core API**: FastAPI
+*   **AI Engine**: Google Gemini Pro (via Google ADK)
+*   **Computer Vision**: Ultralytics YOLOv8, TrOCR
+*   **Web Scraping**: Playwright, Selenium
+*   **Database**: MongoDB (History), Supabase (Vector Search), Redis (Cache/Queue)
+*   **Orchestration**: Celery, Google ADK
+*   **Frontend**: Streamlit, Gradio
+*   **Deployment**: Docker, Google Cloud Run
+
+---
+
+## Installation & Setup
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/mathminds-ai.git
+    cd mathminds-ai
+    ```
+
+2.  **Create a virtual environment:**
+    ```bash
+    python -m venv .venv
+    # Windows
+    .venv\Scripts\activate
+    # Linux/Mac
+    source .venv/bin/activate
+    ```
+
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+4.  **Configure Environment:**
+    Create a `.env` file in the root directory with the following keys:
+    ```env
+    GOOGLE_API_KEY=your_key
+    REDIS_URL=redis://localhost:6379/0
+    MONGO_URI=mongodb://localhost:27017/mathminds
+    SUPABASE_URL=your_url
+    SUPABASE_KEY=your_key
+    FIREBASE_CREDENTIALS_PATH=path/to/creds.json
+    ```
+### Run the Full Stack (API + Worker)
+**Windows:**
+```bash
+run_all.bat
+```
+
+**Docker:**
+```bash
+docker-compose up --build
+```
