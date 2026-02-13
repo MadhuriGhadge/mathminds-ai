@@ -93,7 +93,7 @@ async def main():
     async for event in runner.run_async(
         user_id=user_id,
         session_id=session_id,
-        new_message=types.Content(role="user", parts=[types.Part.from_text(prompt)])
+        new_message=types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
     ):
         # Inspect event types
         if event.content and event.content.parts:
