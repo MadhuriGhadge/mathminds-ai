@@ -33,10 +33,7 @@ pandas
 gradio
 transformers
 torch
-langchain==0.1.0
-langchain-community==0.0.10
-langchain-core==0.1.10
-langchain-google-genai==0.0.5
+
 selenium
 webdriver-manager
-google-adk
+google-adk @ git+https://github.com/google/adk-python.git@main

@@ -1,0 +1,10 @@
+name: mathAI
+model: gemini-2.5-flash
+agent_class: LlmAgent
+instruction: You are the root agent that coordinates other tools.
+sub_agents: []
+tools:
+  - name: symbolic_solver
+  - name: ocr_tool
+  - name: web_scraper
+  - name: image_analyzer

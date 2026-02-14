@@ -19,7 +19,7 @@ from app.tools.vision_analyzer import VisionAnalyzer
 from app.tools.similarity_search import SimilarProblemFinder
 from app.core.math_normalizer import MathQueryNormalizer
 from app.core.settings import settings
-from app.agents.langchain_mathminds import MathMindsLangChainAgent
+from app.agents.adk_mathminds import MathMindsADKAgent
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class Orchestrator:
             self.math_normalizer = MathQueryNormalizer()
             
             # Agents
-            self.langchain_agent = MathMindsLangChainAgent()
+            self.adk_agent = MathMindsADKAgent()
             
         except Exception as e:
             logger.critical(f"Failed to initialize Orchestrator: {e}")
@@ -142,15 +142,15 @@ class Orchestrator:
             # 2. Routing (Agent vs Deterministic)
             if model_preference == "agent":
                 try:
-                    logger.info("Routing to LangChain Agent")
-                    agent_res = await self.langchain_agent.solve(processed.cleaned_content, processed.metadata.get("image_data"))
+                    logger.info("Routing to Google ADK Agent")
+                    agent_res = await self.adk_agent.solve(processed.cleaned_content, processed.metadata.get("image_data"))
                     
                     # Agent returns a string usually, we need to wrap it
                     result_schema["status"] = "success"
-                    result_schema["source"] = "langchain_agent"
+                    result_schema["source"] = "google_adk_agent"
                     result_schema["answer"] = agent_res
-                    result_schema["explanation"] = "Solved by AI Agent using tools."
-                    result_schema["metadata"]["model"] = "gemini-2.5-flash-agent"
+                    result_schema["explanation"] = "Solved by AI Agent using tools (Google ADK)."
+                    result_schema["metadata"]["model"] = "gemini-flash-adk"
                     
                     return self._finalize_result(result_schema, start_time)
                 except Exception as e:
