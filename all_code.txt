@@ -1,5 +1,52 @@
 
 ================================================================================
+FILE: e:\madhuri\mathminds\check_agent.py
+================================================================================
+
+
+try:
+    from google.adk.agents import Agent
+    print("Agent class found in google.adk.agents")
+except ImportError:
+    print("Agent class NOT found in google.adk.agents")
+    
+try:
+    from google.adk.agents import LlmAgent
+    print("LlmAgent class found in google.adk.agents")
+except ImportError:
+    print("LlmAgent class NOT found in google.adk.agents")
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\debug_adk.py
+================================================================================
+
+
+import sys
+try:
+    import google
+    print("google imported")
+    print(dir(google))
+    
+    try:
+        import google.adk
+        print("google.adk imported")
+        print(dir(google.adk))
+    except ImportError as e:
+        print(f"Failed to import google.adk: {e}")
+        
+    try:
+        from google import adk
+        print("from google import adk succeeded")
+        print(dir(adk))
+    except ImportError as e:
+        print(f"Failed to from google import adk: {e}")
+
+except ImportError as e:
+    print(f"Failed to import google: {e}")
+
+
+================================================================================
 FILE: e:\madhuri\mathminds\debug_env.py
 ================================================================================
 
@@ -207,110 +254,16 @@ FILE: e:\madhuri\mathminds\find_embedding_models.py
 ================================================================================
 
 import os
-import asyncio
-from google import genai
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 load_dotenv()
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-async def list_embedding_models():
-    api_key = os.getenv("GOOGLE_API_KEY")
-    client = genai.Client(api_key=api_key)
-    
-    print("Searching for embedding models...")
-    try:
-        pager = client.models.list()
-        found = False
-        for model in pager:
-            if "embed" in model.name.lower():
-                print(f"FOUND: {model.name}")
-                found = True
-        if not found:
-            print("No embedding models found.")
-            
-    except Exception as e:
-        print(f"Error: {e}")
-
-if __name__ == "__main__":
-    asyncio.run(list_embedding_models())
-
-
-================================================================================
-FILE: e:\madhuri\mathminds\gradio_demo.py
-================================================================================
-
-
-import gradio as gr
-import requests
-from PIL import Image
-import io
-import base64
-
-API_URL = "http://localhost:8000/solve"
-
-def process_image(image):
-    if image is None:
-        return None
-    
-    # Convert to base64
-    buffered = io.BytesIO()
-    image.save(buffered, format="JPEG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return img_str
-
-def solve_math(problem_text, image_input):
-    payload = {
-        "text": problem_text if problem_text else "",
-    }
-    
-    if image_input:
-        img_b64 = process_image(image_input)
-        payload["image"] = img_b64
-
-    try:
-        response = requests.post(API_URL, json=payload)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Format output
-        answer = data.get("answer", "No answer provided")
-        steps = "\n".join(data.get("steps", []))
-        explanation = data.get("explanation", "")
-        
-        output = f"## Answer\n{answer}\n\n"
-        if steps:
-            output += f"### Steps\n{steps}\n\n"
-        if explanation:
-            output += f"### Explanation\n{explanation}"
-            
-        return output
-        
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-# Define Interface
-with gr.Blocks(title="MathMinds AI") as demo:
-    gr.Markdown("# 🧮 MathMinds AI Solver")
-    gr.Markdown("Submit a math problem (text or image) to get a step-by-step solution.")
-    
-    with gr.Row():
-        with gr.Column():
-            input_text = gr.Textbox(label="Problem Text", placeholder="Type your math problem here...")
-            input_image = gr.Image(type="pil", label="Upload Image (Optional)")
-            submit_btn = gr.Button("Solve", variant="primary")
-        
-        with gr.Column():
-            output_md = gr.Markdown(label="Solution")
-    
-    submit_btn.click(
-        fn=solve_math,
-        inputs=[input_text, input_image],
-        outputs=output_md
-    )
-
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
-
+print("Available models:")
+for model in genai.list_models():
+    if "gemini" in model.name:
+        print(f"  {model.name:50}  {model.display_name}")
 
 ================================================================================
 FILE: e:\madhuri\mathminds\gunicorn_conf.py
@@ -346,6 +299,118 @@ loglevel = os.getenv("LOG_LEVEL", "info")
 
 # Process Name
 proc_name = "mathminds_api"
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\inspect_adk.py
+================================================================================
+
+
+import os
+import sys
+from dotenv import load_dotenv
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+try:
+    from google.adk.agents import LlmAgent
+    import inspect
+    
+    print("=== LlmAgent.__init__ ===")
+    print(inspect.signature(LlmAgent.__init__))
+    print(LlmAgent.__init__.__doc__)
+    
+    print("\n=== LlmAgent.run ===")
+    if hasattr(LlmAgent, 'run'):
+        print(inspect.signature(LlmAgent.run))
+        print(LlmAgent.run.__doc__)
+    else:
+        print("No run method")
+
+    print("\n=== google.adk.runners.Runner ===")
+    try:
+        from google.adk.runners import Runner
+        print(inspect.signature(Runner.__init__))
+        print(Runner.__init__.__doc__)
+        
+        print("\n=== Runner.run_async ===")
+        if hasattr(Runner, 'run_async'):
+             print(inspect.signature(Runner.run_async))
+             print(Runner.run_async.__doc__)
+    except ImportError:
+        print("Could not import google.adk.runners.Runner")
+
+    print("\n=== google.adk.model.Model ===")
+    print("\n=== google.adk.sessions.in_memory_session_service.InMemorySessionService ===")
+    try:
+        from google.adk.sessions.in_memory_session_service import InMemorySessionService
+        print(dir(InMemorySessionService))
+        print(inspect.signature(InMemorySessionService.create_session))
+    except ImportError:
+         print("Could not import google.adk.sessions.in_memory_session_service.InMemorySessionService")
+    except Exception as e:
+        print(f"Error inspecting InMemorySessionService: {e}")
+         
+    try:
+        import google.genai.types
+        print("\n=== google.genai.types ===")
+        print("google.genai.types found")
+    except ImportError:
+        print("Could not import google.genai.types")
+
+except ImportError as e:
+    print(f"Failed to import: {e}")
+except Exception as e:
+    print(f"Error: {e}")
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\inspect_agent_class.py
+================================================================================
+
+
+import inspect
+from google.adk.agents import Agent
+
+print("=== Agent.__init__ ===")
+print(inspect.signature(Agent.__init__))
+print(Agent.__init__.__doc__)
+
+print("\n=== Agent.run ===")
+if hasattr(Agent, 'run'):
+    print(inspect.signature(Agent.run))
+else:
+    print("No run method")
+
+print("\n=== Agent.run_async ===")
+if hasattr(Agent, 'run_async'):
+    print(inspect.signature(Agent.run_async))
+else:
+    print("No run_async method")
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\locate_adk_modules.py
+================================================================================
+
+
+import pkgutil
+import google.adk
+import importlib
+
+def list_submodules(package, prefix):
+    print(f"package: {prefix}")
+    for loader, module_name, is_pkg in pkgutil.walk_packages(package.__path__, prefix + "."):
+        print(module_name)
+        if is_pkg:
+            try:
+                module = importlib.import_module(module_name)
+                # print(dir(module))
+            except Exception as e:
+                print(f"Failed to import {module_name}: {e}")
+
+list_submodules(google.adk, "google.adk")
 
 
 ================================================================================
@@ -536,6 +601,43 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\test_tool_wrapping.py
+================================================================================
+
+
+from google.adk.agents import LlmAgent
+from google.adk.tools import FunctionTool
+
+def my_tool(x: int) -> int:
+    """doubles x"""
+    return x * 2
+
+try:
+    print("Trying to init LlmAgent with raw function...")
+    agent = LlmAgent(
+        name="test",
+        model="gemini-flash-latest",
+        instruction="test",
+        tools=[my_tool]
+    )
+    print("Success! LlmAgent accepted raw function.")
+except Exception as e:
+    print(f"Failed with raw function: {e}")
+
+try:
+    print("\nTrying to init LlmAgent with FunctionTool...")
+    agent = LlmAgent(
+        name="test",
+        model="gemini-flash-latest",
+        instruction="test",
+        tools=[FunctionTool(my_tool)]
+    )
+    print("Success! LlmAgent accepted FunctionTool.")
+except Exception as e:
+    print(f"Failed with FunctionTool: {e}")
 
 
 ================================================================================
@@ -928,161 +1030,180 @@ FILE: e:\madhuri\mathminds\app\__init__.py
 
 
 ================================================================================
-FILE: e:\madhuri\mathminds\app\agents\langchain_mathminds.py
+FILE: e:\madhuri\mathminds\app\agents\adk_mathminds.py
 ================================================================================
+
 
 import logging
 import asyncio
-from typing import Optional, List, Any
+import base64
+from typing import Optional, Dict, Any, List
 
-# LangChain Imports
-# LangChain Imports
-try:
-    from langchain.agents import initialize_agent, Tool
-    # Try importing AgentType, if not found, we use string
-    try:
-        from langchain.agents import AgentType
-    except ImportError:
-        AgentType = None
-except ImportError as e:
-    # If langchain is completely missing
-    initialize_agent = None
-    Tool = None
-    AgentType = None
+from google.adk.agents import Agent
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.genai import types
 
-try:
-    from langchain_google_genai import ChatGoogleGenerativeAI
-except ImportError:
-    logger.error("Failed to import 'ChatGoogleGenerativeAI'. Ensure 'langchain-google-genai' is installed.")
-    ChatGoogleGenerativeAI = None
-try:
-    from langchain.memory import ConversationBufferMemory
-except ImportError:
-    # Fallback or error logging
-    logger.error("Failed to import 'ConversationBufferMemory'. Ensure 'langchain' is installed correctly.")
-    ConversationBufferMemory = None
-
-# App Imports
 from app.core.settings import settings
-from app.tools.web_scraper import WebScraper, run_playwright_sync
+from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
-# I will need to verify if these classes exist or if I need to wrap functions.
-# For now I will create placeholders or assume standard tool structure if I can't verify.
-# Actually, I should verify content of app/tools/web_scraper.py first to be safe, but I'll write the agent to be robust.
+from app.tools.similarity_search import SimilarProblemFinder
+from app.core.math_normalizer import MathQueryNormalizer
 
 logger = logging.getLogger(__name__)
 
-class MathMindsLangChainAgent:
+class MathMindsADKAgent:
     """
-    Agent-based architecture using LangChain.
-    Replaces custom orchestrator for complex, multi-step reasoning.
+    Agent-based architecture using Google ADK (GitHub version).
+    Refined to match official Multitool Agent documentation patterns.
     """
 
-    def __init__(self, model_name: str = "gemini-pro"):
-        """
-        Initialize the LangChain agent with Gemini and tools.
-        """
+    def __init__(self, model_name: str = "gemini-2.5-flash"):
         self.api_key = settings.GOOGLE_API_KEY
         if not self.api_key:
             logger.warning("No Google API Key found. Agent will fail.")
 
-        if not initialize_agent:
-             logger.error("LangChain not installed or imports failed.")
-             self.agent_executor = None
-             return
+        # Initialize Tool Instances
+        self.web_scraper = WebScraper(headless=True)
+        self.symbolic_solver = SymbolicSolver()
+        self.normalizer = MathQueryNormalizer()
+        self.similar_finder = SimilarProblemFinder()
 
-        # 1. Initialize LLM
-        # We use temperature=0 for deterministic tool usage
-        self.llm = ChatGoogleGenerativeAI(
-            model=model_name,
-            google_api_key=self.api_key,
-            temperature=0,
-            convert_system_message_to_human=True # Sometimes needed for Gemini
-        )
-
-        # 2. Define Tools
-        self.tools = self._load_tools()
-
-        # 3. Initialize Memory
-        self.memory = ConversationBufferMemory(
-            memory_key="chat_history",
-            return_messages=True
-        )
-
-        # 4. Initialize Agent
-        # ZERO_SHOT_REACT_DESCRIPTION is good for general purpose tool use
-        agent_type = AgentType.ZERO_SHOT_REACT_DESCRIPTION if AgentType else "zero-shot-react-description"
-        
-        try:
-            self.agent_executor = initialize_agent(
-                tools=self.tools,
-                llm=self.llm,
-                agent=agent_type,
-                verbose=True,
-                memory=self.memory,
-                handle_parsing_errors=True # robust to minor output format issues
-            )
-            logger.info("MathMindsLangChainAgent initialized successfully.")
-        except Exception as e:
-            logger.error(f"Failed to initialize LangChain agent: {e}")
-            self.agent_executor = None
-
-    def _load_tools(self) -> List[Tool]:
-        """
-        Load and wrap all available tools for the agent.
-        """
-        tools = []
-        try:
-            # 1. Web Scraper
-            web_scraper = WebScraper(headless=True)
+        # Define Tools as simpler closures
+        # Docs pattern: simple functions, passed in a list.
+        async def web_search(query: str) -> str:
+            """
+            Useful for finding current events, prices, weather, and general information from the internet.
             
-            # Sync wrapper for WebScraper
-            def sync_scrape(query: str):
-                # We use the standalone sync function from the module
-                return run_playwright_sync(query, headless=True)
+            Args:
+                query: The search query.
+            """
+            result = await self.web_scraper.scrape(query)
+            if result.get("status") == "success":
+                return result.get("content", "No content found.")
+            else:
+                return f"Error searching web: {result.get('error')}"
 
-            # Async wrapper for WebScraper
-            async def async_scrape(query: str):
-                return await web_scraper.scrape(query)
+        def math_solver(problem: str) -> str:
+            """
+            Useful for solving symbolic math problems like equations, derivatives, integrals, and simplification.
+            
+            Args:
+                problem: The math problem description or expression.
+            """
+            intent = self.normalizer.normalize(problem)
+            query_obj = intent if intent else problem
+            result = self.symbolic_solver.solve(query_obj)
+            
+            if result.get("status") == "success":
+                return result.get("content", "No solution found.")
+            else:
+                return f"Error solving math: {result.get('error')}"
 
-            tools.append(Tool(
-                name="Web Search",
-                func=sync_scrape,
-                coroutine=async_scrape,
-                description="Useful for finding current events, prices, weather, and general information from the internet. Input should be a search query."
-            ))
+        def find_similar_problems(query: str) -> str:
+            """
+            Useful for finding similar math problems and their solutions from the database to learn how they were solved.
+            Use this when you are stuck or want to see examples.
+            
+            Args:
+                query: The math problem to find similar examples for.
+            """
+            results = self.similar_finder.search(query, limit=2)
+            if not results:
+                return "No similar problems found."
+            
+            formatted = "Here are some similar problems and their solutions:\n"
+            for item in results:
+                formatted += f"Problem: {item.get('problem_text')}\nSolution: {item.get('solution_text')}\n---\n"
+            return formatted
 
-            # 2. Symbolic Solver
-            symbolic_solver = SymbolicSolver()
-            tools.append(Tool(
-                name="Math Solver",
-                func=symbolic_solver.solve,
-                description="Useful for solving symbolic math problems like equations, derivatives, integrals, and simplification. Input should be a math expression or problem description."
-            ))
-        except Exception as e:
-            logger.error(f"Error loading tools: {e}")
+        # Initialize Agent
+        # Using 'Agent' class as per official docs, passing functions directly.
+        self.agent = Agent(
+            name="math_minds_core",
+            model=model_name,
+            tools=[web_search, math_solver, find_similar_problems], # Passed directly as function list
+            instruction=(
+                "You are MathMinds AI, a helpful and precise mathematical assistant. "
+                "You have access to tools for solving symbolic math problems, searching the web, and finding similar solved problems. "
+                "If an image is provided, analyze it mathematically. "
+                "Use 'Math Solver' for distinct math problems (equations, calculus, etc.). "
+                "Use 'Web Search' for real-world data (prices, weather, facts). "
+                "Use 'Find Similar Problems' to look up examples if you are unsure how to solve a problem. "
+                "Always explain your steps clearly."
+            )
+        )
+        
+        # Session Service
+        self.session_service = InMemorySessionService()
+        
+        # Runner
+        self.runner = Runner(
+            app_name="mathminds",
+            agent=self.agent,
+            session_service=self.session_service
+        )
 
-        return tools
+        logger.info("MathMindsADKAgent initialized successfully (Doc Standard).")
 
-    async def solve(self, problem: str, image_data: Optional[str] = None) -> Any:
+    async def solve(self, problem: str, image_data: Optional[str] = None, session_id: str = "default_session", user_id: str = "default_user") -> str:
         """
         Main entry point for the agent to solve a problem.
         """
-        if not self.agent_executor:
-            return "Agent not initialized."
-
-        input_text = problem
-        if image_data:
-            input_text += "\n[Image attached] (Image analysis requires separate tool)"
-
+        # IDs are now passed in, with fallbacks for backward compatibility
+        
         try:
-            # Run the agent
-            # use ainvoke for async execution
-            result = await self.agent_executor.ainvoke({"input": input_text})
-            return result['output']
+            # Ensure session exists (create if not found)
+            try:
+                existing = await self.session_service.get_session(
+                    app_name="mathminds", session_id=session_id, user_id=user_id
+                )
+                if not existing:
+                     await self.session_service.create_session(
+                        app_name="mathminds", user_id=user_id, session_id=session_id
+                    )
+            except Exception:
+                try:
+                    await self.session_service.create_session(
+                        app_name="mathminds", user_id=user_id, session_id=session_id
+                    )
+                except Exception as create_err:
+                     logger.warning(f"Session creation issue (might already exist): {create_err}")
+
+            # Construct Message Parts
+            parts = []
+            parts.append(types.Part.from_text(text=problem))
+            
+            if image_data:
+                try:
+                    img_bytes = base64.b64decode(image_data)
+                    mime_type = "image/png" 
+                    if image_data.startswith("/9j/"):
+                        mime_type = "image/jpeg"
+                    
+                    parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
+                    logger.info("Attached image to agent request.")
+                except Exception as e:
+                    logger.error(f"Failed to process image data: {e}")
+                    parts.append(types.Part.from_text(text="[Error: attached image could not be processed]"))
+
+            # Execute Agent
+            response_text = ""
+            async for event in self.runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=types.Content(role="user", parts=parts)
+            ):
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            response_text += part.text
+            
+            return response_text
+
         except Exception as e:
-            logger.error(f"Agent execution failed: {e}")
-            return f"Error solving problem: {str(e)}"
+            logger.error(f"ADK Agent execution failed: {e}")
+            return f"Error processing request: {str(e)}"
 
 
 ================================================================================
@@ -2255,6 +2376,7 @@ from app.tools.vision_analyzer import VisionAnalyzer
 from app.tools.similarity_search import SimilarProblemFinder
 from app.core.math_normalizer import MathQueryNormalizer
 from app.core.settings import settings
+from app.agents.adk_mathminds import MathMindsADKAgent
 
 logger = logging.getLogger(__name__)
 
@@ -2289,6 +2411,9 @@ class Orchestrator:
             self.vision_analyzer = VisionAnalyzer()
             self.similarity_finder = SimilarProblemFinder()
             self.math_normalizer = MathQueryNormalizer()
+            
+            # Agents
+            self.adk_agent = MathMindsADKAgent()
             
         except Exception as e:
             logger.critical(f"Failed to initialize Orchestrator: {e}")
@@ -2371,7 +2496,32 @@ class Orchestrator:
                 result_schema["explanation"] = processed.error_message
                 return self._finalize_result(result_schema, start_time)
 
-            # 2. Hashing & Cache
+            # 2. Routing (Agent vs Deterministic)
+            if model_preference == "agent":
+                try:
+                    logger.info("Routing to Google ADK Agent")
+                    agent_res = await self.adk_agent.solve(
+                        processed.cleaned_content, 
+                        processed.metadata.get("image_data"),
+                        session_id=session_id or "default_session",
+                        user_id=user_id or "default_user"
+                    )
+                    
+                    # Agent returns a string usually, we need to wrap it
+                    result_schema["status"] = "success"
+                    result_schema["source"] = "google_adk_agent"
+                    result_schema["answer"] = agent_res
+                    result_schema["explanation"] = "Solved by AI Agent using tools (Google ADK)."
+                    result_schema["metadata"]["model"] = "gemini-flash-adk"
+                    
+                    return self._finalize_result(result_schema, start_time)
+                except Exception as e:
+                    logger.error(f"Agent failed: {e}")
+                    result_schema["error"] = str(e)
+                    # Fallback to standard flow? No, report error for explicit preference.
+                    return self._finalize_result(result_schema, start_time)
+
+            # 3. Hashing & Cache
             image_data = processed.metadata.get("image_data")
             p_hash = generate_problem_hash(processed.cleaned_content, image_data)
             lock_acquired = False
@@ -2527,7 +2677,7 @@ class Orchestrator:
                      prompt = f"{user_context_str}\n\nProblem: {processed.cleaned_content}"
                 
                 gem_res = await self._safe_llm_call(prompt)
-                self._populate_success(result_schema, gem_res, "gemini-pro")
+                self._populate_success(result_schema, gem_res, "gemini-2.5-flash")
 
             # 5. Save & Index
             if result_schema["status"] == "success":
@@ -3746,7 +3896,7 @@ class VertexGeminiModel(BaseModel):
     Offers enterprise features, higher quotas, and better monitoring than the standard API.
     """
 
-    def __init__(self, project_id: str = None, location: str = "us-central1", model_name: str = "gemini-1.5-pro-preview-0409"):
+    def __init__(self, project_id: str = None, location: str = "us-central1", model_name: str = "gemini-2.5-flash"):
         """
         Initialize Vertex AI client.
         """
@@ -5698,6 +5848,323 @@ except Exception as e:
 
 
 ================================================================================
+FILE: e:\madhuri\mathminds\tests\test_adk_agent.py
+================================================================================
+
+
+import asyncio
+import os
+import logging
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Import Google ADK components
+from google.adk.agents.llm_agent import LlmAgent
+from google.adk.models.google_llm import Gemini
+from google.adk.tools.function_tool import FunctionTool
+from google.adk.runners import Runner
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.genai import types
+
+# Define a simple tool
+def calculator(a: int, b: int, op: str) -> int:
+    """Performs simple arithmetic operations.
+    
+    Args:
+        a: The first number.
+        b: The second number.
+        op: The operation ('+', '-', '*', '/').
+    """
+    logger.info(f"Calculator called with a={a}, b={b}, op={op}")
+    if op == '+':
+        return a + b
+    elif op == '-':
+        return a - b
+    elif op == '*':
+        return a * b
+    elif op == '/':
+        return int(a / b)
+    return 0
+
+async def main():
+    print("Initializing Google ADK Agent...")
+    
+    # 1. Create Model
+    # Ensure GOOGLE_API_KEY is set in .env
+    model = Gemini(model="gemini-2.5-flash")
+    
+    # 2. Create Tools
+    calc_tool = FunctionTool(calculator)
+    
+    # 3. Create Agent
+    agent = LlmAgent(
+        name="math_helper",
+        model=model,
+        tools=[calc_tool],
+        instruction="You are a helpful math assistant. Use the calculator tool for computations."
+    )
+    
+    # 4. Create Services
+    session_service = InMemorySessionService()
+    
+    # 5. Create Runner
+    runner = Runner(
+        app_name="mathminds_adk_test",
+        agent=agent,
+        session_service=session_service
+    )
+    
+    # 6. Run Agent
+    user_id = "test_user"
+    session_id = "test_session"
+    prompt = "Calculate 15 * 12 then add 50."
+    
+    print(f"\nUser: {prompt}")
+    
+    # Creating a new session explicitly if needed, but runner might handle it.
+    # Runner.run requires session to exist? define user_id and session_id.
+    # InMemorySessionService usually auto-creates if logic allows, checking Runner code...
+    # Runner.run check: session_service.get_session returns None -> ValueError "Session not found"
+    # So we must create session first.
+    
+    session = await session_service.create_session(
+        app_name="mathminds_adk_test",
+        user_id=user_id,
+        session_id=session_id
+    )
+    
+    print("Session created. Running agent...")
+    
+    # Using run_async for better control
+    response_text = ""
+    async for event in runner.run_async(
+        user_id=user_id,
+        session_id=session_id,
+        new_message=types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
+    ):
+        # Inspect event types
+        if event.content and event.content.parts:
+            for part in event.content.parts:
+                if part.text:
+                    print(f"Agent partial: {part.text}")
+                    response_text += part.text
+                if part.function_call:
+                    print(f"Tool Call: {part.function_call.name}({part.function_call.args})")
+                if part.function_response:
+                    print(f"Tool Result: {part.function_response.response}")
+                    
+    print(f"\nFinal Response: {response_text}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\tests\test_adk_full.py
+================================================================================
+
+
+import asyncio
+import os
+import logging
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Import the new agent
+from app.agents.adk_mathminds import MathMindsADKAgent
+
+async def main():
+    print("Initializing MathMinds ADK Agent...")
+    
+    try:
+        agent = MathMindsADKAgent()
+        
+        # Test 1: Math Problem
+        prompt_math = "Calculate the derivative of x^2 + 5x."
+        print(f"\nUser: {prompt_math}")
+        response_math = await agent.solve(prompt_math)
+        print(f"Agent Response: {response_math}")
+        
+        # Test 2: General Knowledge (Web Search)
+        # Note: Web scraping might fail if not configured or blocked, but agent should handle it gracefully.
+        prompt_search = "What is the capital of France?"
+        print(f"\nUser: {prompt_search}")
+        response_search = await agent.solve(prompt_search)
+        print(f"Agent Response: {response_search}")
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\tests\test_adk_poc.py
+================================================================================
+
+
+import asyncio
+import os
+import sys
+import logging
+from dotenv import load_dotenv
+
+# Fix path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+
+try:
+    from google.adk.agents import LlmAgent
+    from google.adk.runners import Runner
+    from google.adk.sessions.in_memory_session_service import InMemorySessionService
+    from google.genai import types
+except ImportError as e:
+    print(f"Import Error: {e}")
+    sys.exit(1)
+
+async def main():
+    print("Initializing components...")
+    
+    # 1. Agent
+    # Note: LlmAgent arguments might strictly be pydantic fields.
+    # If 'model' is expected to be a string alias, this works.
+    agent = LlmAgent(
+        name="MathTest",
+        model="gemini-2.5-flash",
+        instruction="You are a helpful math assistant." 
+    )
+    
+    # 2. Session Service
+    session_service = InMemorySessionService()
+    
+    # 3. Runner
+    # Assuming Runner takes agent and session_service. 
+    # If it needs 'model' client explicitly, we might fail here.
+    try:
+        runner = Runner(agent=agent, app_name="MathMindsPoC", session_service=session_service)
+    except TypeError as e:
+        print(f"Runner init failed: {e}")
+        # Maybe it takes arguments differently?
+        return
+
+    print("Setting up session...")
+    session_id = "poc_session"
+    user_id = "poc_user"
+
+    try:
+        await session_service.create_session(
+            app_name="MathMindsPoC",
+            user_id=user_id,
+            session_id=session_id
+        )
+    except Exception as e:
+        print(f"Session creation failed: {e}")
+        return
+
+    print("Running agent...")
+
+    try:
+        async for event in runner.run_async(
+            user_id=user_id,
+            session_id=session_id,
+            new_message=types.Content(
+                role="user",
+                parts=[types.Part.from_text(text="What is 10 * 10?")]
+            )
+        ):
+            # Print the event to see structure
+            print(f"Event: {type(event)}")
+            if hasattr(event, 'content') and event.content:
+                 for part in event.content.parts:
+                     if part.text:
+                         print(f"Text: {part.text}")
+            
+    except Exception as e:
+        print(f"Run Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\tests\test_api_integration.py
+================================================================================
+
+
+import asyncio
+import os
+import sys
+import logging
+from dotenv import load_dotenv
+
+# Fix path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+from app.core.orchestrator import Orchestrator
+
+async def main():
+    print("Initializing Orchestrator...")
+    try:
+        orchestrator = Orchestrator()
+        
+        # Test: Arithmetic via Agent
+        prompt = "Calculate 15 * 3."
+        print(f"\nUser: {prompt} (Preference: agent)")
+        
+        result = await orchestrator.process_problem(
+            text=prompt,
+            model_preference="agent",
+            request_id="test_req_1"
+        )
+        
+        print("\nResult:")
+        print(f"Status: {result.get('status')}")
+        print(f"Source: {result.get('source')}")
+        print(f"Answer: {result.get('answer')}")
+        print(f"Model: {result.get('metadata', {}).get('model')}")
+        
+        if result.get("source") == "google_adk_agent":
+            print("\nSUCCESS: Routed to Google ADK Agent.")
+        else:
+            print("\nFAILURE: Did not route to Google ADK Agent.")
+
+    except Exception as e:
+        logger.error(f"Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+================================================================================
 FILE: e:\madhuri\mathminds\tests\test_hashing.py
 ================================================================================
 
@@ -6104,7 +6571,7 @@ async def test_orchestrator_routes_model_preference():
         mock_solver.solve.assert_called_with(
             "Solve this", 
             image_data=None, 
-            model_name="gemini-1.5-pro"
+            model_name="gemini-2.5-flash"
         )
         
         print("\n[PASS] Orchestrator Routing Test Passed!")
@@ -6445,6 +6912,81 @@ class TestResilience(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+================================================================================
+FILE: e:\madhuri\mathminds\tests\test_session_isolation.py
+================================================================================
+
+
+import sys
+import os
+sys.path.insert(0, os.getcwd())
+
+import pytest
+import asyncio
+from app.agents.adk_mathminds import MathMindsADKAgent
+
+@pytest.mark.asyncio
+async def test_session_isolation():
+    """
+    Verifies that the ADK agent maintains separate conversation histories 
+    for different session IDs.
+    """
+    agent = MathMindsADKAgent()
+    
+    user_id = "test_user_isolation"
+    session_a = "session_A"
+    session_b = "session_B"
+
+    print("\n--- Starting Session Isolation Test ---")
+
+    # 1. Seed Session A
+    print(f"Seeding {session_a} with context 'My name is Alice'...")
+    resp_a1 = await agent.solve(
+        problem="My name is Alice. Remember this.",
+        session_id=session_a,
+        user_id=user_id
+    )
+    print(f"Agent response (A1): {resp_a1}")
+
+    # 2. Seed Session B
+    print(f"Seeding {session_b} with context 'My name is Bob'...")
+    resp_b1 = await agent.solve(
+        problem="My name is Bob. Remember this.",
+        session_id=session_b,
+        user_id=user_id
+    )
+    print(f"Agent response (B1): {resp_b1}")
+
+    # 3. Query Session A
+    print(f"Querying {session_a} for name...")
+    resp_a2 = await agent.solve(
+        problem="What is my name?",
+        session_id=session_a,
+        user_id=user_id
+    )
+    print(f"Agent response (A2): {resp_a2}")
+    
+    # 4. Query Session B
+    print(f"Querying {session_b} for name...")
+    resp_b2 = await agent.solve(
+        problem="What is my name?",
+        session_id=session_b,
+        user_id=user_id
+    )
+    print(f"Agent response (B2): {resp_b2}")
+
+    # Assertions
+    assert "Alice" in resp_a2, f"Session A failed to remember Alice. Got: {resp_a2}"
+    assert "Bob" in resp_b2, f"Session B failed to remember Bob. Got: {resp_b2}"
+    assert "Bob" not in resp_a2, "Session A leaked context from Session B!"
+    assert "Alice" not in resp_b2, "Session B leaked context from Session A!"
+
+    print("\nSUCCESS: Sessions are isolated correctly!")
+
+if __name__ == "__main__":
+    asyncio.run(test_session_isolation())
 
 
 ================================================================================

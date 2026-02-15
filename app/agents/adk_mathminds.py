@@ -12,6 +12,7 @@ from google.genai import types
 from app.core.settings import settings
 from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
+from app.tools.similarity_search import SimilarProblemFinder
 from app.core.math_normalizer import MathQueryNormalizer
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class MathMindsADKAgent:
         self.web_scraper = WebScraper(headless=True)
         self.symbolic_solver = SymbolicSolver()
         self.normalizer = MathQueryNormalizer()
+        self.similar_finder = SimilarProblemFinder()
 
         # Define Tools as simpler closures
         # Docs pattern: simple functions, passed in a list.
@@ -63,18 +65,36 @@ class MathMindsADKAgent:
             else:
                 return f"Error solving math: {result.get('error')}"
 
+        def find_similar_problems(query: str) -> str:
+            """
+            Useful for finding similar math problems and their solutions from the database to learn how they were solved.
+            Use this when you are stuck or want to see examples.
+            
+            Args:
+                query: The math problem to find similar examples for.
+            """
+            results = self.similar_finder.search(query, limit=2)
+            if not results:
+                return "No similar problems found."
+            
+            formatted = "Here are some similar problems and their solutions:\n"
+            for item in results:
+                formatted += f"Problem: {item.get('problem_text')}\nSolution: {item.get('solution_text')}\n---\n"
+            return formatted
+
         # Initialize Agent
         # Using 'Agent' class as per official docs, passing functions directly.
         self.agent = Agent(
             name="math_minds_core",
             model=model_name,
-            tools=[web_search, math_solver], # Passed directly as function list
+            tools=[web_search, math_solver, find_similar_problems], # Passed directly as function list
             instruction=(
                 "You are MathMinds AI, a helpful and precise mathematical assistant. "
-                "You have access to tools for solving symbolic math problems and searching the web. "
+                "You have access to tools for solving symbolic math problems, searching the web, and finding similar solved problems. "
                 "If an image is provided, analyze it mathematically. "
                 "Use 'Math Solver' for distinct math problems (equations, calculus, etc.). "
                 "Use 'Web Search' for real-world data (prices, weather, facts). "
+                "Use 'Find Similar Problems' to look up examples if you are unsure how to solve a problem. "
                 "Always explain your steps clearly."
             )
         )
@@ -91,13 +111,12 @@ class MathMindsADKAgent:
 
         logger.info("MathMindsADKAgent initialized successfully (Doc Standard).")
 
-    async def solve(self, problem: str, image_data: Optional[str] = None) -> str:
+    async def solve(self, problem: str, image_data: Optional[str] = None, session_id: str = "default_session", user_id: str = "default_user") -> str:
         """
         Main entry point for the agent to solve a problem.
         """
-        user_id = "default_user" # TODO: integrate with actual user auth
-        session_id = "default_session" # TODO: integrate with session management
-
+        # IDs are now passed in, with fallbacks for backward compatibility
+        
         try:
             # Ensure session exists (create if not found)
             try:
