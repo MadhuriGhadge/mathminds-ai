@@ -84,3 +84,13 @@ yolov8n.pt
 *.onnx
 *.h5
 *.ckpt
+
+
+export_code.py
+all_code.txt
+
+
+*.log
+*.tmp
+*.out
+*.generated.*
