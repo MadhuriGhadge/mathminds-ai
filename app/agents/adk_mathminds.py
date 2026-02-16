@@ -1,4 +1,5 @@
 
+
 import logging
 import asyncio
 import base64
@@ -13,6 +14,8 @@ from app.core.settings import settings
 from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
 from app.tools.similarity_search import SimilarProblemFinder
+from app.core.ocr import OCRProcessor
+from app.tools.vision_analyzer import VisionAnalyzer
 from app.core.math_normalizer import MathQueryNormalizer
 
 logger = logging.getLogger(__name__)
@@ -23,7 +26,7 @@ class MathMindsADKAgent:
     Refined to match official Multitool Agent documentation patterns.
     """
 
-    def __init__(self, model_name: str = "gemini-2.5-flash"):
+    def __init__(self, model_name: str = "gemini-2.5-pro"):
         self.api_key = settings.GOOGLE_API_KEY
         if not self.api_key:
             logger.warning("No Google API Key found. Agent will fail.")
@@ -33,6 +36,8 @@ class MathMindsADKAgent:
         self.symbolic_solver = SymbolicSolver()
         self.normalizer = MathQueryNormalizer()
         self.similar_finder = SimilarProblemFinder()
+        self.ocr = OCRProcessor()
+        self.vision_analyzer = VisionAnalyzer()
 
         # Define Tools as simpler closures
         # Docs pattern: simple functions, passed in a list.
@@ -82,20 +87,51 @@ class MathMindsADKAgent:
                 formatted += f"Problem: {item.get('problem_text')}\nSolution: {item.get('solution_text')}\n---\n"
             return formatted
 
+        def read_image(image_data: str) -> str:
+            """
+            Useful for reading text, numbers, or equations from an image when you cannot see it clearly or need the exact text.
+            
+            Args:
+                image_data: The base64 string of the image.
+            """
+            try:
+                text = self.ocr.extract_text(image_data=image_data)
+                return text if text else "No text found in image."
+            except Exception as e:
+                return f"Error reading image: {str(e)}"
+        
+        async def analyze_image(image_data: str, focus: str = "") -> str:
+            """
+            Analyzes an image mathematically: extracts equations, counts objects, describes graphs, etc.
+            Use this when the user uploaded an image and wants to count items or understand the visual content.
+            
+            Args:
+                image_data: The base64 string of the image.
+                focus: Option string to focus analysis (e.g. "count red balls").
+            """
+            try:
+                result = self.vision_analyzer.analyze(image_data, focus)
+                return str(result)
+            except Exception as e:
+                return f"Image analysis failed: {str(e)}"
+
         # Initialize Agent
         # Using 'Agent' class as per official docs, passing functions directly.
         self.agent = Agent(
             name="math_minds_core",
             model=model_name,
-            tools=[web_search, math_solver, find_similar_problems], # Passed directly as function list
+            tools=[web_search, math_solver, find_similar_problems, read_image, analyze_image], # Passed directly as function list
             instruction=(
                 "You are MathMinds AI, a helpful and precise mathematical assistant. "
-                "You have access to tools for solving symbolic math problems, searching the web, and finding similar solved problems. "
-                "If an image is provided, analyze it mathematically. "
-                "Use 'Math Solver' for distinct math problems (equations, calculus, etc.). "
-                "Use 'Web Search' for real-world data (prices, weather, facts). "
-                "Use 'Find Similar Problems' to look up examples if you are unsure how to solve a problem. "
-                "Always explain your steps clearly."
+                "You can receive BOTH text instructions AND images in the same query. "
+                "When an image is provided, ALWAYS analyze it first — describe what you see, "
+                "extract equations if present, count objects if it's a probability/statistics question, "
+                "or interpret graphs/charts/diagrams mathematically. "
+                "Then combine the image analysis with the text prompt to give a complete answer. "
+                "Use tools only when necessary (e.g. 'Math Solver' for symbolic work, 'Web Search' for facts). "
+                "Use 'Read Image' to extract text from images if it's blurry or you need exact wording. "
+                "Use 'Analyze Image' to count objects or detect items. "
+                "Always explain your steps clearly and show reasoning."
             )
         )
         
@@ -141,11 +177,19 @@ class MathMindsADKAgent:
             
             if image_data:
                 try:
-                    img_bytes = base64.b64decode(image_data)
-                    mime_type = "image/png" 
+                    # Better MIME type detection
                     if image_data.startswith("/9j/"):
                         mime_type = "image/jpeg"
-                    
+                    elif image_data.startswith("iVBORw"):
+                        mime_type = "image/png"
+                    elif image_data.startswith("R0lGOD"):
+                        mime_type = "image/gif"
+                    elif image_data.startswith("UklGR"):
+                        mime_type = "image/webp"
+                    else:
+                        mime_type = "image/png" # Default fallback
+                        
+                    img_bytes = base64.b64decode(image_data)
                     parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
                     logger.info("Attached image to agent request.")
                 except Exception as e:
