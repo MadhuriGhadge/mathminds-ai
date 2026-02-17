@@ -8,7 +8,10 @@ from typing import Optional, Dict, Any, List
 from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.sessions.in_memory_session_service import InMemorySessionService
 from google.genai import types
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from google.genai.errors import ClientError
 
 from app.core.settings import settings
 from app.tools.web_scraper import WebScraper
@@ -17,6 +20,7 @@ from app.tools.similarity_search import SimilarProblemFinder
 from app.core.ocr import OCRProcessor
 from app.tools.vision_analyzer import VisionAnalyzer
 from app.core.math_normalizer import MathQueryNormalizer
+from app.core.llm_guard import LLM_SEMAPHORE
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +30,7 @@ class MathMindsADKAgent:
     Refined to match official Multitool Agent documentation patterns.
     """
 
-    def __init__(self, model_name: str = "gemini-2.5-pro"):
+    def __init__(self, model_name: str = "gemini-2.5-flash"):
         self.api_key = settings.GOOGLE_API_KEY
         if not self.api_key:
             logger.warning("No Google API Key found. Agent will fail.")
@@ -54,7 +58,7 @@ class MathMindsADKAgent:
             else:
                 return f"Error searching web: {result.get('error')}"
 
-        def math_solver(problem: str) -> str:
+        async def math_solver(problem: str) -> str:
             """
             Useful for solving symbolic math problems like equations, derivatives, integrals, and simplification.
             
@@ -63,7 +67,7 @@ class MathMindsADKAgent:
             """
             intent = self.normalizer.normalize(problem)
             query_obj = intent if intent else problem
-            result = self.symbolic_solver.solve(query_obj)
+            result = await self.symbolic_solver.solve(query_obj)
             
             if result.get("status") == "success":
                 return result.get("content", "No solution found.")
@@ -196,17 +200,29 @@ class MathMindsADKAgent:
                     logger.error(f"Failed to process image data: {e}")
                     parts.append(types.Part.from_text(text="[Error: attached image could not be processed]"))
 
-            # Execute Agent
-            response_text = ""
-            async for event in self.runner.run_async(
-                user_id=user_id,
-                session_id=session_id,
-                new_message=types.Content(role="user", parts=parts)
-            ):
-                if event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if part.text:
-                            response_text += part.text
+            # Execute Agent with Semaphore & Retry
+            # We define a helper to use tenacity, since we can't easily decorate the context manager block directly
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=4, max=10),
+                retry=retry_if_exception_type(Exception), # Broad catch for ADK errors which might wrap 429s
+                reraise=True
+            )
+            async def run_agent_safely():
+                outcome = ""
+                async for event in self.runner.run_async(
+                    user_id=user_id,
+                    session_id=session_id,
+                    new_message=types.Content(role="user", parts=parts)
+                ):
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if part.text:
+                                outcome += part.text
+                return outcome
+
+            async with LLM_SEMAPHORE:
+                response_text = await run_agent_safely()
             
             return response_text
 

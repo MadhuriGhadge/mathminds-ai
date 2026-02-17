@@ -137,9 +137,9 @@ def save_history():
 def get_active_session():
     return st.session_state.chat_sessions[st.session_state.active_session_id]
 
-def add_message(role, content, **kwargs):
+def add_message(role, content, sent_to_api=False, **kwargs):
     session = get_active_session()
-    msg = {"role": role, "content": content, "timestamp": time.time()}
+    msg = {"role": role, "content": content, "timestamp": time.time(), "sent_to_api": sent_to_api}
     msg.update(kwargs)
     session["messages"].append(msg)
     save_history()
@@ -384,8 +384,11 @@ def chat_interface():
     prompt = None
     image_b64 = None
 
+    # Processing Flag
+    is_processing = st.session_state.get("is_processing", False)
+
     with tab_text:
-        prompt = st.chat_input("Ask a math question...")
+        prompt = st.chat_input("Ask a math question...", disabled=is_processing)
 
     with tab_draw:
         col_canvas, col_controls = st.columns([3, 1])
@@ -402,13 +405,16 @@ def chat_interface():
                 drawing_mode="freedraw",
                 key=st.session_state.canvas_key,
             )
+            
+            draw_prompt = st.text_input("Question about drawing (optional)", placeholder="Solve this handwritten math problem...")
+            
         with col_controls:
             st.caption("Controls")
             if st.button("Clear Canvas"):
                 st.session_state.canvas_key = f"canvas_{uuid.uuid4()}"
                 st.rerun()
             
-            if st.button("Solve Drawing", type="primary"):
+            if st.button("Solve Drawing", type="primary", disabled=is_processing):
                 if canvas_result.image_data is not None:
                     # Convert to b64
                     img = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
@@ -419,34 +425,60 @@ def chat_interface():
                     buf = io.BytesIO()
                     bg.save(buf, format="PNG")
                     image_b64 = base64.b64encode(buf.getvalue()).decode()
-                    prompt = "Solve this handwritten math problem."
+                    prompt = draw_prompt if draw_prompt else "Solve this handwritten math problem."
 
     with tab_upload:
-        uploaded = st.file_uploader("Upload Image", type=["png", "jpg"])
-        if uploaded and st.button("Analyze Image"):
+        uploaded = st.file_uploader("Upload Image", type=["png", "jpg"], disabled=is_processing)
+        upload_prompt = st.text_input("Question about image (optional)", placeholder="Analyze this image...", disabled=is_processing)
+        
+        if uploaded and st.button("Analyze Image", disabled=is_processing):
             image_b64 = base64.b64encode(uploaded.getvalue()).decode()
-            prompt = "Analyze this image."
+            prompt = upload_prompt if upload_prompt else "Analyze this image."
 
 
     # 3. Processing Logic
     if prompt:
         # Optimistic UI Update
-        add_message("user", prompt, image_data=image_b64)
+        # Generate strict request_id here to guarantee 1:1 mapping with user input
+        req_id = str(uuid.uuid4())
+        # Add message with sent_to_api=False (will be set to True before actual call)
+        add_message("user", prompt, image_data=image_b64, request_id=req_id, sent_to_api=False)
+        
+        # Set processing flag
+        st.session_state.is_processing = True
         st.rerun()
 
     # Check if last message was user, trigger AI response
-    if session["messages"] and session["messages"][-1]["role"] == "user":
+    # Strict Gating: Only proceed if NOT already sent to API
+    if (
+        session["messages"] 
+        and session["messages"][-1]["role"] == "user" 
+        and not session["messages"][-1].get("sent_to_api", False)
+    ):
         last_msg = session["messages"][-1]
+        
+        # Retrieve persistent request_id
+        current_request_id = last_msg.get("request_id")
+        if not current_request_id:
+             # Fallback for old messages or if something went wrong
+             current_request_id = str(uuid.uuid4())
+             last_msg["request_id"] = current_request_id
+             save_history()
         
         with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("Agent is thinking... (Calling tools)"):
                 try:
+                    # MARK AS SENT BEFORE CALLING
+                    last_msg["sent_to_api"] = True
+                    save_history()
+
                     # Payload
                     payload = {
                         "text": last_msg["content"],
                         "image": last_msg.get("image_data"),
                         "model_preference": "agent",
-                        "session_id": st.session_state.active_session_id
+                        "session_id": st.session_state.active_session_id,
+                        "request_id": current_request_id # Use persistent ID
                     }
                     
                     # HEADERS with Auth
@@ -481,10 +513,20 @@ def chat_interface():
                                 steps=data.get("steps") # New field
                             )
                             st.rerun()
+                            st.session_state.is_processing = False
+                            st.rerun()
+                            st.session_state.is_processing = False
+                            st.rerun()
+                        elif response.status_code in [202, 409]:
+                            # Silent handling for duplicates or processing
+                            # Just clear flag and rerun, no noise
+                            st.session_state.is_processing = False
+                            st.rerun()
                         else:
                             error_msg = data.get("error", "Unknown error")
                             st.error(f"API Error: {error_msg}")
                             add_message("assistant", f"⚠️ Error: {error_msg}")
+                            st.session_state.is_processing = False
                             st.rerun() # Ensure we close the turn
                     else:
                         st.error(f"Server Error: {response.status_code}")
@@ -495,12 +537,12 @@ def chat_interface():
                         except:
                             err_msg = f"HTTP {response.status_code}"
                         
-                        add_message("assistant", f"⚠️ Server Error: {err_msg}")
                         st.rerun()
                 except Exception as e:
                     st.error(f"Connection Failed: {e}")
                     # CRITICAL FIX: Add error message to history to stop retry loop
                     add_message("assistant", f"❌ Connection Failed: {str(e)}")
+                    st.session_state.is_processing = False
                     st.rerun()
 
 # --- Initialize View State ---

@@ -32,6 +32,9 @@ from contextlib import asynccontextmanager
 configure_logging()
 logger = logging.getLogger(__name__)
 
+# Deduplication Set
+active_requests = set()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Preload resources
@@ -220,11 +223,28 @@ async def solve_problem(
             detail="Orchestrator not initialized"
         )
 
+    # Deduplication Check
+    final_request_id = solve_req.request_id or req_id
+    
+    if final_request_id in active_requests:
+        logger.warning(f"[{final_request_id}] Blocked duplicate request (UI retry).")
+        # Return 202 Accepted (Processing) - Friendly response
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={
+                "status": "processing",
+                "message": "Request is currently being processed. Please wait...",
+                "metadata": {"request_id": final_request_id}
+            }
+        )
+    
+    active_requests.add(final_request_id)
+
     try:
         result = await orchestrator.process_problem(
             text=solve_req.effective_text, 
             image=solve_req.image, 
-            request_id=req_id,
+            request_id=final_request_id,
             model_preference=solve_req.model_preference,
             session_id=solve_req.session_id,
             user_id=current_user.get("uid")
@@ -235,9 +255,8 @@ async def solve_problem(
         public_metadata.pop("_internal_debug", None)
         
         # Map internal result to schema
-        # Map internal result to schema
         return SolveResponse(
-            request_id=result.get("request_id", req_id),
+            request_id=result.get("request_id", final_request_id),
             status=result["status"],
             problem_type=result.get("problem_type", "unknown"),
             source=result.get("source", "unknown"),
@@ -263,6 +282,10 @@ async def solve_problem(
                 "metadata": {"request_id": req_id}
             }
         )
+    finally:
+        # Always remove from active set
+        if final_request_id in active_requests:
+            active_requests.remove(final_request_id)
 
 # --- User Profile Endpoints ---
 from pydantic import BaseModel

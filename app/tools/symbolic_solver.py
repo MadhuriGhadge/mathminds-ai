@@ -1,5 +1,7 @@
 import logging
 import os
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, Optional, Union
 import sympy
 from sympy.parsing.sympy_parser import parse_expr
@@ -34,7 +36,10 @@ class SymbolicSolver:
             except Exception as e:
                 logger.warning(f"Failed to initialize WolframAlpha client: {e}")
 
-    def solve(self, query: Union[str, MathIntent]) -> Dict[str, Any]:
+            except Exception as e:
+                logger.warning(f"Failed to initialize WolframAlpha client: {e}")
+
+    async def solve(self, query: Union[str, MathIntent]) -> Dict[str, Any]:
         """
         Attempts to solve the query symbolically.
         Accepts either a raw string (tried via Wolfram) or a structured MathIntent (for SymPy).
@@ -52,20 +57,23 @@ class SymbolicSolver:
         if self.wolfram_client:
             try:
                  # Wolfram prefers natural language usually
-                res = self.wolfram_client.query(raw_query)
-                answer_text = ""
-                for pod in res.pods:
-                    for sub in pod.subpods:
-                        if sub.plaintext:
-                            answer_text += f"{pod.title}: {sub.plaintext}\n"
-                
-                if answer_text:
-                    return {
-                        "source": "wolfram_alpha",
-                        "content": answer_text,
-                        "status": "success"
-                    }
-                    
+                 # Run blocking call in executor to avoid freezing event loop
+                 loop = asyncio.get_event_loop()
+                 res = await loop.run_in_executor(None, self.wolfram_client.query, raw_query)
+                 
+                 answer_text = ""
+                 for pod in res.pods:
+                     for sub in pod.subpods:
+                         if sub.plaintext:
+                             answer_text += f"{pod.title}: {sub.plaintext}\n"
+                 
+                 if answer_text:
+                     return {
+                         "source": "wolfram_alpha",
+                         "content": answer_text,
+                         "status": "success"
+                     }
+                     
             except Exception as e:
                 logger.warning(f"WolframAlpha query failed: {e}")
                 

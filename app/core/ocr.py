@@ -5,7 +5,8 @@ import io
 import logging
 import numpy as np
 from typing import Optional, List
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, UnidentifiedImageError
+import binascii
 try:
     from paddleocr import PaddleOCR
 except ImportError:
@@ -62,9 +63,13 @@ class OCRProcessor:
             if ";base64," in target_b64:
                 _, target_b64 = target_b64.split(";base64,")
             
-            img_bytes = base64.b64decode(target_b64)
-            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-            img_arr = np.array(img)
+            try:
+                img_bytes = base64.b64decode(target_b64)
+                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                img_arr = np.array(img)
+            except (binascii.Error, UnidentifiedImageError, ValueError) as e:
+                 logger.error(f"Image decoding failed: {e}")
+                 return f"Error: Invalid image data ({str(e)})"
 
             # 2. Run OCR
             result = self.engine.ocr(img_arr, cls=True)

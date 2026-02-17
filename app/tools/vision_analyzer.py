@@ -2,6 +2,7 @@ import logging
 import base64
 import numpy as np
 import cv2
+import binascii 
 from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -123,12 +124,19 @@ class VisionAnalyzer:
 
         try:
             # Decode image
-            img_bytes = base64.b64decode(image_data)
-            nparr = np.frombuffer(img_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if img is None:
-                raise ValueError("Failed to decode image")
+            if ";base64," in image_data:
+                _, image_data = image_data.split(";base64,")
+
+            try:
+                img_bytes = base64.b64decode(image_data)
+                nparr = np.frombuffer(img_bytes, np.uint8)
+                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                
+                if img is None:
+                    raise ValueError("Failed to decode image (cv2 returned None)")
+            except (binascii.Error, ValueError) as e:
+                logger.error(f"Image decoding failed in VisionAnalyzer: {e}")
+                return {"status": "error", "error": f"Invalid image data: {str(e)}"}
 
             # Run Interface
             results = self.model(img, verbose=False) 
