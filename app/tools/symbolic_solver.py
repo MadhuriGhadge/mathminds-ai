@@ -8,11 +8,7 @@ from sympy.parsing.sympy_parser import parse_expr
 from app.core.math_normalizer import MathIntent
 from app.core.settings import settings
 
-# Try importing wolframalpha, handling if not installed or configured
-try:
-    import wolframalpha
-except ImportError:
-    wolframalpha = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -24,20 +20,7 @@ class SymbolicSolver:
 
     def __init__(self, wolfram_app_id: Optional[str] = None):
         self.wolfram_app_id = wolfram_app_id or settings.WOLFRAM_APP_ID
-        self.wolfram_client = None
-        
         logger.info(f"Initializing SymbolicSolver. WolframAppID present: {bool(self.wolfram_app_id)}")
-        
-        if self.wolfram_app_id and wolframalpha:
-            try:
-                logger.info("Attempting to create WolframAlpha client...")
-                self.wolfram_client = wolframalpha.Client(self.wolfram_app_id)
-                logger.info("WolframAlpha client created.")
-            except Exception as e:
-                logger.warning(f"Failed to initialize WolframAlpha client: {e}")
-
-            except Exception as e:
-                logger.warning(f"Failed to initialize WolframAlpha client: {e}")
 
     async def solve(self, query: Union[str, MathIntent]) -> Dict[str, Any]:
         """
@@ -54,28 +37,53 @@ class SymbolicSolver:
         logger.info(f"SymbolicSolver triggered for query: {raw_query}")
         
         # 1. Try WolframAlpha (best for natural language or complex stuff)
-        if self.wolfram_client:
+        if self.wolfram_app_id:
             try:
-                 # Wolfram prefers natural language usually
-                 # Run blocking call in executor to avoid freezing event loop
-                 loop = asyncio.get_event_loop()
-                 res = await loop.run_in_executor(None, self.wolfram_client.query, raw_query)
-                 
-                 answer_text = ""
-                 for pod in res.pods:
-                     for sub in pod.subpods:
-                         if sub.plaintext:
-                             answer_text += f"{pod.title}: {sub.plaintext}\n"
-                 
-                 if answer_text:
-                     return {
-                         "source": "wolfram_alpha",
-                         "content": answer_text,
-                         "status": "success"
-                     }
+                import httpx
+                import urllib.parse
+                
+                # Construct URL manually to avoid library assertion errors
+                # We request JSON output for easier parsing
+                encoded_query = urllib.parse.quote(raw_query)
+                url = f"https://api.wolframalpha.com/v2/query?appid={self.wolfram_app_id}&input={encoded_query}&output=json"
+                
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(url, timeout=30.0)
+                    
+                if response.status_code != 200:
+                    logger.warning(f"WolframAlpha API returned status {response.status_code}")
+                else:
+                    data = response.json()
+                    query_result = data.get("queryresult", {})
+                    
+                    success = query_result.get("success")
+                    error = query_result.get("error")
+                    
+                    logger.info(f"Wolfram Response: success={success}, error={error}")
+                    
+                    if not success:
+                         logger.warning(f"Wolfram query returned success=false. Error: {error}")
+                    else:
+                        answer_text = ""
+                        pods = query_result.get("pods", [])
+                        
+                        for pod in pods:
+                            title = pod.get("title", "Result")
+                            for sub in pod.get("subpods", []):
+                                plaintext = sub.get("plaintext")
+                                if plaintext:
+                                    answer_text += f"{title}: {plaintext}\n"
+                        
+                        if answer_text:
+                            return {
+                                "source": "wolfram_alpha",
+                                "content": answer_text,
+                                "status": "success"
+                            }
                      
             except Exception as e:
-                logger.warning(f"WolframAlpha query failed: {e}")
+                import traceback
+                logger.warning(f"WolframAlpha query failed: {repr(e)}\n{traceback.format_exc()}")
                 
         # 2. Try SymPy (Local Fallback)
         # We need a structured intent for SymPy to work reliably. 

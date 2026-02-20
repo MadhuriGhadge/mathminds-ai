@@ -19,28 +19,32 @@ class VisionAnalyzer:
         Args:
             model_path: Path to YOLO weights. Defaults to nano model (will download if missing).
         """
-        try:
-            logger.info(f"Loading YOLO model: {model_path}")
-            # Lazy import to avoid startup lag
-            from ultralytics import YOLO
-            self.model = YOLO(model_path)
+        self.model_path = model_path
+        self.model = None
             
-            # Color ranges in HSV
-            # Note: OpenCV uses H: 0-179, S: 0-255, V: 0-255
-            self.color_ranges = {
-                "red1": ((0, 70, 50), (10, 255, 255)),
-                "red2": ((170, 70, 50), (180, 255, 255)),
-                "green": ((36, 70, 50), (89, 255, 255)),
-                "blue": ((90, 70, 50), (128, 255, 255)),
-                "yellow": ((20, 100, 100), (35, 255, 255)),
-                "black": ((0, 0, 0), (180, 255, 30)),
-                "white": ((0, 0, 200), (180, 50, 255)),
-                "gray": ((0, 0, 50), (180, 50, 200))
-            }
+        # Color ranges in HSV
+        # Note: OpenCV uses H: 0-179, S: 0-255, V: 0-255
+        self.color_ranges = {
+            "red1": ((0, 70, 50), (10, 255, 255)),
+            "red2": ((170, 70, 50), (180, 255, 255)),
+            "green": ((36, 70, 50), (89, 255, 255)),
+            "blue": ((90, 70, 50), (128, 255, 255)),
+            "yellow": ((20, 100, 100), (35, 255, 255)),
+            "black": ((0, 0, 0), (180, 255, 30)),
+            "white": ((0, 0, 200), (180, 50, 255)),
+            "gray": ((0, 0, 50), (180, 50, 200))
+        }
 
-        except Exception as e:
-            logger.error(f"Failed to load YOLO model: {e}")
-            self.model = None
+    def _ensure_model(self):
+        """Lazy load the model if not already loaded."""
+        if self.model is None:
+            try:
+                logger.info(f"Loading YOLO model (Lazy): {self.model_path}")
+                from ultralytics import YOLO
+                self.model = YOLO(self.model_path)
+            except Exception as e:
+                logger.error(f"Failed to load YOLO model: {e}")
+                self.model = None
 
     # Define aliases for Semantic Grounding
     ALIAS_MAP = {
@@ -112,8 +116,9 @@ class VisionAnalyzer:
             "status": "success"
         }
 
+        self._ensure_model()
         if not self.model:
-            return {"status": "error", "error": "Model not initialized"}
+            return {"status": "error", "error": "Model not available"}
 
         # Heuristic: Only run YOLO if query implies counting/detection/quantification
         keywords = ["count", "how many", "number of", "calculate", "probability", "statistics", "quantify", "fraction", "percentage"]

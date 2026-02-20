@@ -10,9 +10,12 @@ logger = logging.getLogger(__name__)
 # Initialize Firebase Admin SDK
 try:
     if settings.FIREBASE_CREDENTIALS_PATH:
-        cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
-        firebase_admin.initialize_app(cred)
-        logger.info("Firebase Admin SDK initialized successfully.")
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
+            firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin SDK initialized successfully.")
+        else:
+            logger.info("Firebase Admin SDK already initialized.")
     else:
         logger.warning("FIREBASE_CREDENTIALS_PATH not set. Auth will fail if enabled.")
 except Exception as e:

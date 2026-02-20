@@ -23,7 +23,7 @@ from app.core.errors import AppError, ErrorCodes, ERROR_MESSAGES
 from app.core.settings import settings  # New settings module
 import os
 # Import dependency
-from app.api.deps import get_orchestrator, get_redis_pool, get_mongo_client, get_db_manager
+from app.api.deps import get_orchestrator, get_redis_pool, get_mongo_client, get_db_manager, get_redis_client
 from app.core.security import verify_token, get_current_user
 
 from contextlib import asynccontextmanager
@@ -32,8 +32,7 @@ from contextlib import asynccontextmanager
 configure_logging()
 logger = logging.getLogger(__name__)
 
-# Deduplication Set
-active_requests = set()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -163,12 +162,10 @@ async def health_check():
     
     # Check Redis
     try:
-        redis_pool = get_redis_pool()
-        if redis_pool:
-            conn = redis_pool.get_connection('health_check')
-            conn.ping()
-            redis_pool.release(conn)
-            health_status["components"]["redis"] = "✓ healthy"
+        redis_client = get_redis_client()
+        if redis_client:
+            redis_client.ping()
+            health_status["components"]["redis"] = "✓ healthy" # using shared pool
         else:
             health_status["components"]["redis"] = "✗ unavailable"
     except Exception as e:
@@ -223,22 +220,28 @@ async def solve_problem(
             detail="Orchestrator not initialized"
         )
 
-    # Deduplication Check
+    # Deduplication Check (Redis)
     final_request_id = solve_req.request_id or req_id
+    dedup_key = f"active_req:{final_request_id}"
     
-    if final_request_id in active_requests:
-        logger.warning(f"[{final_request_id}] Blocked duplicate request (UI retry).")
-        # Return 202 Accepted (Processing) - Friendly response
-        return JSONResponse(
-            status_code=status.HTTP_202_ACCEPTED,
-            content={
-                "status": "processing",
-                "message": "Request is currently being processed. Please wait...",
-                "metadata": {"request_id": final_request_id}
-            }
-        )
-    
-    active_requests.add(final_request_id)
+    redis_client = None
+    try:
+        redis_client = get_redis_client()
+        # Set key with 300s expiry, only if it doesn't exist (nx=True)
+        if not redis_client.set(dedup_key, "processing", ex=300, nx=True):
+            logger.warning(f"[{final_request_id}] Blocked duplicate request (UI retry).")
+            # Return 202 Accepted (Processing) - Friendly response
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "status": "processing",
+                    "message": "Request is currently being processed. Please wait...",
+                    "metadata": {"request_id": final_request_id}
+                }
+            )
+    except Exception as e:
+        logger.warning(f"Redis dedup failed (failing open): {e}")
+        # If Redis fails, we allow the request to proceed (fail open)
 
     try:
         result = await orchestrator.process_problem(
@@ -283,9 +286,12 @@ async def solve_problem(
             }
         )
     finally:
-        # Always remove from active set
-        if final_request_id in active_requests:
-            active_requests.remove(final_request_id)
+        # Cleanup deduplication key
+        if redis_client:
+            try:
+                redis_client.delete(dedup_key)
+            except Exception as e:
+                logger.warning(f"Failed to clear dedup key: {e}")
 
 # --- User Profile Endpoints ---
 from pydantic import BaseModel

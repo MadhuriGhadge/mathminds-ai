@@ -16,8 +16,8 @@ class QueryRouter:
     def __init__(self):
         # Keywords for Web Search
         self.web_keywords = [
-            "stock", "price", "weather", "news", "current", "latest","today's" 
-            "who is", "when is", "population", "rate","what is"
+            "stock", "price", "weather", "news", "current", "latest", "today's", 
+            "who is", "when is", "population", "rate", "what is",
             "http", "https"
         ]
         

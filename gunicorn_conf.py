@@ -18,7 +18,7 @@ max_requests = int(os.getenv("MAX_REQUESTS", 1000))
 max_requests_jitter = int(os.getenv("MAX_REQUESTS_JITTER", 50))
 
 # Timeouts
-timeout = int(os.getenv("TIMEOUT", 120)) # Higher timeout for GenAI calls/model loading
+timeout = int(os.getenv("TIMEOUT", 360)) # Higher timeout for GenAI calls/model loading
 keepalive = int(os.getenv("KEEPALIVE", 5))
 
 # Logging
