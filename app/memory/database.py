@@ -55,10 +55,15 @@ class DatabaseManager:
 
             self.db = self.client[db_name]
             self.collection = self.db["solved_problems"]
+            self.sessions_collection = self.db["chat_sessions"]
+            self.users_collection = self.db["users"]
             
-            # Ensure index
-            index = IndexModel([("hash", ASCENDING)], name="hash_index")
-            self.collection.create_indexes([index])
+            # Ensure indexes
+            self.collection.create_index([("hash", ASCENDING)], name="hash_index")
+            self.sessions_collection.create_index([("user_id", ASCENDING)], name="user_id_index")
+            self.sessions_collection.create_index([("session_id", ASCENDING)], name="session_id_index", unique=True)
+            self.users_collection.create_index([("email", ASCENDING)], name="email_index", unique=True)
+            self.users_collection.create_index([("user_id", ASCENDING)], name="user_id_index", unique=True)
             
             logger.info(f"Successfully connected to MongoDB at {self.mongo_uri} (DB: {db_name})")
             
@@ -134,18 +139,20 @@ class DatabaseManager:
             logger.error(f"Failed to save problem: {e}")
             return False
 
-    def create_session(self, session_id: str, title: str = "New Chat") -> bool:
+    def create_session(self, user_id: str, session_id: str, title: str = "New Chat") -> bool:
         """
-        Initialize a new chat session.
+        Create a new chat session for a user.
+        Uses upsert with $setOnInsert to be idempotent.
         """
-        if self.db is None:
+        if self.sessions_collection is None:
             return False
         try:
-            self.db["chat_sessions"].update_one(
+            self.sessions_collection.update_one(
                 {"session_id": session_id},
                 {
                     "$setOnInsert": {
                         "session_id": session_id,
+                        "user_id": user_id,
                         "title": title,
                         "created_at": datetime.now(timezone.utc),
                         "messages": []
@@ -154,78 +161,151 @@ class DatabaseManager:
                 upsert=True
             )
             return True
-        except PyMongoError as e:
-            logger.error(f"Failed to create session {session_id}: {e}")
+        except Exception as e:
+            # If it's a duplicate key error, it means another thread just inserted it.
+            # That's fine, we consider the session "created" or at least existing.
+            if "E11000" in str(e) or "duplicate key" in str(e).lower():
+                return True
+            logger.error(f"Failed to create session {session_id} for user {user_id}: {e}")
             return False
 
-    def get_chat_history(self, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    def list_sessions(self, user_id: str) -> List[Dict[str, Any]]:
         """
-        Retrieve recent messages for a session.
+        Retrieve all sessions for a specific user.
         """
-        if self.db is None:
+        if self.sessions_collection is None:
             return []
         try:
-            # Get the session document with sliced messages
-            doc = self.db["chat_sessions"].find_one(
-                {"session_id": session_id},
-                {"messages": {"$slice": -limit}}
-            )
-            if doc and "messages" in doc:
-                return doc["messages"]
-            return []
+            cursor = self.sessions_collection.find(
+                {"user_id": user_id},
+                {"session_id": 1, "title": 1, "created_at": 1, "_id": 0}
+            ).sort("created_at", -1)
+            return list(cursor)
         except PyMongoError as e:
-            logger.error(f"Failed to get history for {session_id}: {e}")
+            logger.error(f"Failed to list sessions for user {user_id}: {e}")
             return []
 
-    def save_chat_message(self, session_id: str, role: str, content: str) -> bool:
+    def get_chat_history(self, user_id: str, session_id: str, limit: int = 50) -> Optional[List[Dict[str, Any]]]:
+        """
+        Retrieve recent messages for a session, ensuring it belongs to the user.
+        Returns None if session not found or not owned by user.
+        """
+        if self.sessions_collection is None:
+            return None
+        try:
+            doc = self.sessions_collection.find_one(
+                {"session_id": session_id, "user_id": user_id},
+                {"messages": {"$slice": -limit}, "_id": 0}
+            )
+            if doc is not None:
+                return doc.get("messages", [])
+            return None
+        except PyMongoError as e:
+            logger.error(f"Failed to get history for {session_id} (user: {user_id}): {e}")
+            return None
+
+    def save_chat_message(self, user_id: str, session_id: str, role: str, content: str, **kwargs) -> bool:
         """
         Append a message to the session history.
-        Also updates the session title if it's the first user message.
+        Only succeeds if the session belongs to the user_id.
         """
-        if self.db is None:
+        if self.sessions_collection is None:
             return False
         try:
             # logic to update title if it's currently "New Chat" and this is a user message
             if role == "user":
-                session = self.db["chat_sessions"].find_one({"session_id": session_id})
-                if session and session.get("title") == "New Chat":
-                    # Generate title from content (truncate)
+                session = self.sessions_collection.find_one({"session_id": session_id, "user_id": user_id})
+                if session and (session.get("title") == "New Chat" or session.get("title") == "New Session" or session.get("title") == "Untitled"):
                     new_title = content[:50] + "..." if len(content) > 50 else content
-                    self.db["chat_sessions"].update_one(
-                        {"session_id": session_id},
+                    self.sessions_collection.update_one(
+                        {"session_id": session_id, "user_id": user_id},
                         {"$set": {"title": new_title}}
                     )
 
             # Push the new message
-            self.db["chat_sessions"].update_one(
-                {"session_id": session_id},
-                {
-                    "$push": {
-                        "messages": {
-                            "role": role, 
-                            "content": content, 
-                            "timestamp": datetime.now(timezone.utc)
-                        }
-                    }
-                },
-                upsert=True
+            msg = {
+                "role": role, 
+                "content": content, 
+                "timestamp": datetime.now(timezone.utc)
+            }
+            msg.update(kwargs)
+            
+            result = self.sessions_collection.update_one(
+                {"session_id": session_id, "user_id": user_id},
+                {"$push": {"messages": msg}}
             )
-            return True
+            # return True if we found the document to update
+            return result.matched_count > 0
         except PyMongoError as e:
-            logger.error(f"Failed to save message to {session_id}: {e}")
+            logger.error(f"Failed to save message to {session_id} for user {user_id}: {e}")
+            return False
+
+    def delete_session(self, user_id: str, session_id: str) -> bool:
+        """
+        Delete a session belonging to a user.
+        """
+        if self.sessions_collection is None:
+            return False
+        try:
+            result = self.sessions_collection.delete_one({"session_id": session_id, "user_id": user_id})
+            return result.deleted_count > 0
+        except PyMongoError as e:
+            logger.error(f"Failed to delete session {session_id} for user {user_id}: {e}")
+            return False
+
+    def rename_session(self, user_id: str, session_id: str, new_title: str) -> bool:
+        """
+        Rename a session belonging to a user.
+        """
+        if self.sessions_collection is None:
+            return False
+        try:
+            result = self.sessions_collection.update_one(
+                {"session_id": session_id, "user_id": user_id},
+                {"$set": {"title": new_title}}
+            )
+            # return True if we found the document to update (even if title was same)
+            return result.matched_count > 0
+        except PyMongoError as e:
+            logger.error(f"Failed to rename session {session_id} for user {user_id}: {e}")
             return False
 
     # -------------------------------------------------------------------------
     # User Profile Management
     # -------------------------------------------------------------------------
-    def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+    def create_user(self, user_data: Dict[str, Any]) -> bool:
         """
-        Retrieve user profile by ID (Firebase UID).
+        Create a new user in the database.
         """
-        if self.db is None:
+        if self.users_collection is None:
+            return False
+        try:
+            self.users_collection.insert_one(user_data)
+            return True
+        except PyMongoError as e:
+            logger.error(f"Failed to create user: {e}")
+            return False
+
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve a user by email.
+        """
+        if self.users_collection is None:
             return None
         try:
-            return self.db["users"].find_one({"user_id": user_id})
+            return self.users_collection.find_one({"email": email})
+        except PyMongoError as e:
+            logger.error(f"Failed to get user by email {email}: {e}")
+            return None
+
+    def get_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve user profile by ID (Firebase UID or local UID).
+        """
+        if self.users_collection is None:
+            return None
+        try:
+            return self.users_collection.find_one({"user_id": user_id})
         except PyMongoError as e:
             logger.error(f"Failed to get profile for {user_id}: {e}")
             return None
@@ -234,10 +314,10 @@ class DatabaseManager:
         """
         Update or create user profile.
         """
-        if self.db is None:
+        if self.users_collection is None:
             return False
         try:
-            self.db["users"].update_one(
+            self.users_collection.update_one(
                 {"user_id": user_id},
                 {"$set": {**data, "updated_at": datetime.now(timezone.utc)}},
                 upsert=True

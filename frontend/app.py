@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import json
 import base64
 from PIL import Image
 import io
@@ -13,20 +12,34 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Session state: ALL keys initialized ONCE at the very top ─────────────────
-# BUG 1 WAS HERE: The original code had TWO `if "user" not in st.session_state`
-# blocks — one here and one again at line ~4797 after the CSS/config blocks.
-# Streamlit re-runs the whole script top-to-bottom on every rerun. On the rerun
-# triggered after login, the second block executed and found "user" ALREADY in
-# session_state (because we just set it during login), so it was a no-op —
-# BUT on a hard browser refresh the two blocks ran in the same execution pass
-# and the second one re-initialized user=None, wiping the login state.
-# FIX: One single initialization block here, never again below.
+# CRITICAL: These must be the very first st.session_state accesses, before any
+# st.* UI calls. Streamlit re-runs the entire script on every interaction.
 if "is_processing" not in st.session_state:
     st.session_state.is_processing = False
 if "user" not in st.session_state:
-    st.session_state.user = None
+    st.session_state.user = None          # None = logged out
 if "current_view" not in st.session_state:
     st.session_state.current_view = "Chat"
+
+# MULTIUSER FIX ─ these three keys must be RESET on logout.
+# They are initialized here so first-run doesn't KeyError.
+if "chat_sessions" not in st.session_state:
+    st.session_state.chat_sessions = []
+if "active_session_id" not in st.session_state:
+    st.session_state.active_session_id = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# MULTIUSER FIX ─ track WHICH user's data is currently loaded.
+# If this doesn't match st.session_state.user["uid"], we know we need to reload.
+if "loaded_for_user" not in st.session_state:
+    st.session_state.loaded_for_user = None
+
+if "renaming_session_id" not in st.session_state:
+    st.session_state.renaming_session_id = None
+
+if "canvas_key" not in st.session_state:
+    st.session_state.canvas_key = "main_canvas"
 
 # ====================================================
 # Page Config — must come before any st.* calls
@@ -91,59 +104,177 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ====================================================
-# Config & State
+# Config
 # ====================================================
-API_URL = "http://localhost:8000/solve"
-HISTORY_FILE = "chat_history.json"
+BASE_API_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+API_URL = f"{BASE_API_URL}/solve"
 
-if "chat_sessions" not in st.session_state:
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            st.session_state.chat_sessions = json.load(f)
-    else:
-        st.session_state.chat_sessions = {}
 
-if "active_session_id" not in st.session_state:
-    sid = str(uuid.uuid4())
-    st.session_state.chat_sessions[sid] = {"title": "New Session", "messages": [], "created_at": time.time()}
-    st.session_state.active_session_id = sid
+# ====================================================
+# MULTIUSER ISOLATION — Core helper
+# ====================================================
+def _clear_user_state():
+    """
+    Wipe ALL per-user data from Streamlit session state.
 
-# ── IMPORTANT: No second "user" init block here. See top of file. ─────────────
+    Called on logout and whenever a different user logs in.
+
+    WHY THIS IS THE MOST IMPORTANT FUNCTION FOR MULTIUSER ISOLATION:
+    Streamlit's st.session_state is per browser-tab, not per user. If User A
+    logs in, chats, then User B logs in on the same tab, all of User A's
+    chat_sessions and messages are still sitting in st.session_state. The
+    backend correctly refuses to serve User A's data to User B (every DB query
+    filters by user_id), but the frontend would still DISPLAY User A's messages
+    briefly until the next API call returns. This function prevents that.
+    """
+    st.session_state.chat_sessions       = []
+    st.session_state.active_session_id   = None
+    st.session_state.messages            = []
+    st.session_state.loaded_for_user     = None
+    st.session_state.is_processing       = False
+    st.session_state.current_view        = "Chat"
+    st.session_state.renaming_session_id = None
+    st.session_state.canvas_key          = f"canvas_{uuid.uuid4()}"
+    # Also clear profile cache if it exists
+    if "profile_data" in st.session_state:
+        del st.session_state["profile_data"]
+
 
 # ====================================================
 # Helper Functions
 # ====================================================
-def save_history():
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(st.session_state.chat_sessions, f, indent=2)
+def get_auth_headers():
+    if st.session_state.user and "token" in st.session_state.user:
+        return {"Authorization": f"Bearer {st.session_state.user['token']}"}
+    return {}
+
+
+def load_sessions():
+    """Fetch THIS user's chat sessions from the backend and populate state."""
+    try:
+        headers = get_auth_headers()
+        response = requests.get(f"{BASE_API_URL}/chat/sessions", headers=headers, timeout=30)
+        if response.status_code == 200:
+            st.session_state.chat_sessions = response.json()
+            # Mark that we've successfully loaded data for this specific user
+            if st.session_state.user:
+                st.session_state.loaded_for_user = st.session_state.user["uid"]
+            # Auto-select first session if none active
+            if not st.session_state.active_session_id and st.session_state.chat_sessions:
+                st.session_state.active_session_id = st.session_state.chat_sessions[0]["session_id"]
+                load_messages(st.session_state.active_session_id)
+            elif st.session_state.active_session_id and not any(
+                s["session_id"] == st.session_state.active_session_id
+                for s in st.session_state.chat_sessions
+            ):
+                # Active session was deleted — pick first or clear
+                if st.session_state.chat_sessions:
+                    st.session_state.active_session_id = st.session_state.chat_sessions[0]["session_id"]
+                    load_messages(st.session_state.active_session_id)
+                else:
+                    st.session_state.active_session_id = None
+                    st.session_state.messages = []
+        elif response.status_code == 401:
+            # JWT expired — force re-login
+            _clear_user_state()
+            st.session_state.user = None
+            st.error("Session expired. Please log in again.")
+        else:
+            st.error(f"Failed to load sessions: {response.status_code}")
+            st.session_state.chat_sessions = []
+    except Exception as e:
+        st.error(f"Error loading sessions: {e}")
+        st.session_state.chat_sessions = []
+
+
+def load_messages(session_id):
+    """
+    Load messages for a session.
+    The backend enforces user ownership — it will 404 if session_id
+    doesn't belong to the authenticated user, so this is safe.
+    """
+    try:
+        headers = get_auth_headers()
+        response = requests.get(
+            f"{BASE_API_URL}/chat/sessions/{session_id}/messages",
+            headers=headers, timeout=30
+        )
+        if response.status_code == 200:
+            st.session_state.messages = response.json()
+        elif response.status_code == 404:
+            # Session doesn't belong to this user — clear silently
+            st.session_state.messages = []
+            st.session_state.active_session_id = None
+            st.warning("Session not found.")
+        else:
+            st.session_state.messages = []
+            st.error(f"Failed to load messages: {response.status_code}")
+    except Exception as e:
+        st.error(f"Error loading messages: {e}")
+        st.session_state.messages = []
+
 
 def get_active_session():
-    return st.session_state.chat_sessions[st.session_state.active_session_id]
+    for s in st.session_state.chat_sessions:
+        if s["session_id"] == st.session_state.active_session_id:
+            return s
+    return None
+
 
 def add_message(role, content, sent_to_api=False, **kwargs):
-    session = get_active_session()
+    """Optimistic UI update only — persistence happens in the backend via /solve."""
     msg = {"role": role, "content": content, "timestamp": time.time(), "sent_to_api": sent_to_api}
     msg.update(kwargs)
-    session["messages"].append(msg)
-    save_history()
+    st.session_state.messages.append(msg)
+
 
 def new_chat():
-    sid = str(uuid.uuid4())
-    st.session_state.chat_sessions[sid] = {"title": "New Session", "messages": [], "created_at": time.time()}
-    st.session_state.active_session_id = sid
-    save_history()
-    st.rerun()
+    try:
+        headers = get_auth_headers()
+        response = requests.post(f"{BASE_API_URL}/chat/sessions", headers=headers, timeout=30)
+        if response.status_code == 200:
+            new_s = response.json()
+            st.session_state.active_session_id = new_s["session_id"]
+            st.session_state.messages = []
+            load_sessions()
+            st.rerun()
+        else:
+            st.error("Failed to create new chat")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
 
 def delete_chat(sid):
-    if sid in st.session_state.chat_sessions:
-        del st.session_state.chat_sessions[sid]
-        if st.session_state.active_session_id == sid:
-            if st.session_state.chat_sessions:
-                st.session_state.active_session_id = list(st.session_state.chat_sessions.keys())[0]
-            else:
-                new_chat()
-        save_history()
-        st.rerun()
+    try:
+        headers = get_auth_headers()
+        response = requests.delete(f"{BASE_API_URL}/chat/sessions/{sid}", headers=headers, timeout=30)
+        if response.status_code == 200:
+            if st.session_state.active_session_id == sid:
+                st.session_state.active_session_id = None
+                st.session_state.messages = []
+            load_sessions()
+            st.rerun()
+        else:
+            st.error("Failed to delete chat")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
+
+def rename_chat(sid, new_title):
+    try:
+        headers = get_auth_headers()
+        response = requests.patch(
+            f"{BASE_API_URL}/chat/sessions/{sid}",
+            headers=headers, json={"title": new_title}, timeout=30
+        )
+        if response.status_code == 200:
+            load_sessions()
+            st.rerun()
+        else:
+            st.error("Failed to rename chat")
+    except Exception as e:
+        st.error(f"Error: {e}")
+
 
 # ====================================================
 # Login Screen
@@ -168,23 +299,29 @@ def login_screen():
                 password = st.text_input("Password", type="password")
                 if st.form_submit_button("Sign In", use_container_width=True):
                     if email and password:
-                        api_key = os.getenv("FIREBASE_WEB_API_KEY")
-                        if not api_key:
-                            st.error("Missing FIREBASE_WEB_API_KEY in .env")
-                        else:
-                            try:
-                                url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
-                                r = requests.post(url, json={"email": email, "password": password, "returnSecureToken": True}, timeout=30)
-                                if r.status_code == 200:
-                                    d = r.json()
-                                    st.session_state.user = {"email": d["email"], "token": d["idToken"], "uid": d["localId"]}
-                                    st.success(f"Welcome back, {d['email']}!")
-                                    time.sleep(0.5)
-                                    st.rerun()
-                                else:
-                                    st.error(f"Login Failed: {r.json().get('error',{}).get('message','Unknown error')}")
-                            except Exception as e:
-                                st.error(f"Connection Error: {e}")
+                        try:
+                            r = requests.post(
+                                f"{BASE_API_URL}/auth/login",
+                                json={"email": email, "password": password},
+                                timeout=30
+                            )
+                            if r.status_code == 200:
+                                d = r.json()
+                                # ✅ MULTIUSER FIX: Clear ALL previous user data
+                                # BEFORE setting the new user identity.
+                                _clear_user_state()
+                                st.session_state.user = {
+                                    "email": d["email"],
+                                    "token": d["access_token"],
+                                    "uid":   d["user_id"]
+                                }
+                                st.success(f"Welcome back, {d['email']}!")
+                                time.sleep(0.5)
+                                st.rerun()
+                            else:
+                                st.error(f"Login Failed: {r.json().get('detail', 'Unknown error')}")
+                        except Exception as e:
+                            st.error(f"Connection Error: {e}")
                     else:
                         st.error("Please enter email and password.")
 
@@ -193,32 +330,46 @@ def login_screen():
                 new_email        = st.text_input("New Email", placeholder="new@student.edu")
                 new_password     = st.text_input("New Password", type="password")
                 confirm_password = st.text_input("Confirm Password", type="password")
+                full_name        = st.text_input("Full Name", placeholder="Optional")
                 if st.form_submit_button("Create Account", use_container_width=True):
                     if new_email and new_password:
                         if new_password != confirm_password:
                             st.error("Passwords do not match!")
                         else:
-                            api_key = os.getenv("FIREBASE_WEB_API_KEY")
-                            if not api_key:
-                                st.error("Missing FIREBASE_WEB_API_KEY in .env")
-                            else:
-                                try:
-                                    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signUp?key={api_key}"
-                                    r = requests.post(url, json={"email": new_email, "password": new_password, "returnSecureToken": True}, timeout=30)
-                                    if r.status_code == 200:
-                                        d = r.json()
-                                        st.session_state.user = {"email": d["email"], "token": d["idToken"], "uid": d["localId"]}
-                                        st.success(f"Account Created! Welcome, {d['email']}!")
-                                        time.sleep(0.5)
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Sign Up Failed: {r.json().get('error',{}).get('message','Unknown error')}")
-                                except Exception as e:
-                                    st.error(f"Connection Error: {e}")
+                            try:
+                                r = requests.post(
+                                    f"{BASE_API_URL}/auth/signup",
+                                    json={
+                                        "email":     new_email,
+                                        "password":  new_password,
+                                        "full_name": full_name
+                                    },
+                                    timeout=30
+                                )
+                                if r.status_code == 200:
+                                    d = r.json()
+                                    # ✅ MULTIUSER FIX: Same as login — clear first
+                                    _clear_user_state()
+                                    st.session_state.user = {
+                                        "email": d["email"],
+                                        "token": d["access_token"],
+                                        "uid":   d["user_id"]
+                                    }
+                                    st.success(f"Account Created! Welcome, {d['email']}!")
+                                    time.sleep(0.5)
+                                    st.rerun()
+                                else:
+                                    st.error(f"Sign Up Failed: {r.json().get('detail', 'Unknown error')}")
+                            except Exception as e:
+                                st.error(f"Connection Error: {e}")
                     else:
                         st.error("Please fill all fields.")
 
-        st.markdown("<p style='text-align:center;font-size:0.8rem;color:#6b7280;'>Powered by Gemini & SymPy</p>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='text-align:center;font-size:0.8rem;color:#6b7280;'>Powered by Gemini & SymPy</p>",
+            unsafe_allow_html=True
+        )
+
 
 # ── Auth gate ─────────────────────────────────────────────────────────────────
 if not st.session_state.user:
@@ -226,16 +377,31 @@ if not st.session_state.user:
     st.stop()
 
 # ====================================================
+# ✅ MULTIUSER FIX — Per-rerun data isolation check
+# ====================================================
+# At this point we know a user IS logged in.
+# Check: is the data currently in state actually for THIS user?
+# This handles the scenario where User A's browser tab is reused by User B
+# (e.g. token swap, shared kiosk, etc.) without a full page reload.
+_current_uid = st.session_state.user["uid"]
+if st.session_state.loaded_for_user != _current_uid:
+    # Data in state belongs to a different user (or nobody) — reload for current user
+    _clear_user_state()
+    load_sessions()
+    # loaded_for_user is set inside load_sessions() on success
+
+
+# ====================================================
 # Profile Interface
 # ====================================================
 def profile_interface():
     st.title("👤 User Profile")
     st.markdown("Customize your MathMinds experience.")
-    headers = {"Authorization": f"Bearer {st.session_state.user['token']}"}
+    headers = get_auth_headers()
 
     if "profile_data" not in st.session_state:
         try:
-            r = requests.get(f"{API_URL.replace('/solve','')}/users/profile", headers=headers, timeout=30)
+            r = requests.get(f"{BASE_API_URL}/users/profile", headers=headers, timeout=30)
             st.session_state.profile_data = r.json() if r.status_code == 200 else {}
         except Exception:
             st.session_state.profile_data = {}
@@ -246,43 +412,57 @@ def profile_interface():
 
     with st.form("profile_form"):
         display_name = st.text_input("Display Name", value=data.get("display_name", ""))
-        math_level   = st.selectbox("Math Proficiency Level", levels,
-                                    index=levels.index(data.get("math_level","Undergraduate"))
-                                    if data.get("math_level") in levels else 1)
-        interests    = st.multiselect("Areas of Interest", interests_all,
-                                      default=[i for i in data.get("interests",[]) if i in interests_all])
+        math_level   = st.selectbox(
+            "Math Proficiency Level", levels,
+            index=levels.index(data.get("math_level", "Undergraduate"))
+            if data.get("math_level") in levels else 1
+        )
+        interests = st.multiselect(
+            "Areas of Interest", interests_all,
+            default=[i for i in data.get("interests", []) if i in interests_all]
+        )
         if st.form_submit_button("Save Profile", use_container_width=True, type="primary"):
             payload = {"display_name": display_name, "math_level": math_level, "interests": interests}
             try:
-                r = requests.post(f"{API_URL.replace('/solve','')}/users/profile", json=payload, headers=headers)
+                r = requests.post(f"{BASE_API_URL}/users/profile", json=payload, headers=headers)
                 if r.status_code == 200:
                     st.success("Profile updated!")
                     st.session_state.profile_data = payload
-                    time.sleep(1); st.rerun()
+                    time.sleep(1)
+                    st.rerun()
                 else:
                     st.error(f"Update failed: {r.text}")
             except Exception as e:
                 st.error(f"Error saving: {e}")
 
+
 # ====================================================
 # Chat Interface
 # ====================================================
 def chat_interface():
-    if st.session_state.active_session_id not in st.session_state.chat_sessions:
-        new_chat()
+    if not st.session_state.active_session_id:
+        if st.session_state.chat_sessions:
+            st.session_state.active_session_id = st.session_state.chat_sessions[0]["session_id"]
+            load_messages(st.session_state.active_session_id)
+        else:
+            new_chat()
+            return
 
-    st.title(st.session_state.chat_sessions[st.session_state.active_session_id]["title"])
-    session = get_active_session()
+    active_sess = get_active_session()
+    st.title(active_sess["title"] if active_sess else "Chat")
 
     # ── 1. Render history ─────────────────────────────────────────────────────
-    for msg in session["messages"]:
-        if msg["role"] == "user":
-            with st.chat_message("user", avatar="👤"):
+    for msg in st.session_state.messages:
+        role = msg["role"]
+        with st.chat_message(role, avatar="👤" if role == "user" else "🤖"):
+            if role == "user":
                 if msg.get("image_data"):
-                    st.image(base64.b64decode(msg["image_data"]), width=300)
+                    try:
+                        st.image(base64.b64decode(msg["image_data"]), width=300)
+                    except Exception:
+                        pass
                 st.write(msg["content"])
-        else:
-            with st.chat_message("assistant", avatar="🤖"):
+            else:
                 meta = msg.get("metadata", {})
                 if meta:
                     badges = ""
@@ -293,16 +473,17 @@ def chat_interface():
                         badges += '<span class="badge badge-blue">💾 CACHED</span>'
                     elif src in ("google_adk_agent", "agent"):
                         badges += '<span class="badge badge-purple">🤖 AGENT</span>'
-                    model = meta.get("model_used")
+                    model = meta.get("model_used") or meta.get("model")
                     if model:
                         badges += f'<span class="badge" style="background:rgba(255,255,255,0.1);">{model}</span>'
                     if badges:
                         st.markdown(badges, unsafe_allow_html=True)
 
-                content = msg["content"]
-                if msg.get("reasoning"):
+                if msg.get("reasoning") or msg.get("explanation"):
                     with st.expander("Show Reasoning Steps"):
-                        st.markdown(msg["reasoning"])
+                        st.markdown(msg.get("reasoning") or msg.get("explanation"))
+
+                content = msg["content"]
                 if isinstance(content, dict) and "final_answer" in content:
                     st.markdown(f"**Answer:**\n\n> {content['final_answer']}")
                 else:
@@ -316,24 +497,29 @@ def chat_interface():
     is_processing = st.session_state.get("is_processing", False)
 
     with tab_text:
-        prompt = st.chat_input("Ask a math question...", disabled=is_processing)
+        text_prompt = st.chat_input("Ask a math question...", disabled=is_processing)
+        if text_prompt:
+            prompt = text_prompt
 
     with tab_draw:
         col_canvas, col_controls = st.columns([3, 1])
         with col_canvas:
-            if "canvas_key" not in st.session_state:
-                st.session_state.canvas_key = "main_canvas"
             canvas_result = st_canvas(
                 stroke_width=3, stroke_color="#FFFFFF", background_color="#000000",
-                height=300, width=600, drawing_mode="freedraw", key=st.session_state.canvas_key,
+                height=300, width=600, drawing_mode="freedraw",
+                key=st.session_state.canvas_key,
             )
-            draw_prompt = st.text_input("Question about drawing (optional)", placeholder="Solve this handwritten problem...")
+            draw_prompt_input = st.text_input(
+                "Question about drawing (optional)",
+                placeholder="Solve this handwritten problem...",
+                key="draw_prompt_input"
+            )
         with col_controls:
             st.caption("Controls")
-            if st.button("Clear Canvas"):
+            if st.button("Clear"):
                 st.session_state.canvas_key = f"canvas_{uuid.uuid4()}"
                 st.rerun()
-            if st.button("Solve Drawing", type="primary", disabled=is_processing):
+            if st.button("Solve", type="primary", disabled=is_processing):
                 if canvas_result.image_data is not None:
                     img = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
                     bg  = Image.new("RGB", img.size, (0, 0, 0))
@@ -341,102 +527,99 @@ def chat_interface():
                     buf = io.BytesIO()
                     bg.save(buf, format="PNG")
                     image_b64 = base64.b64encode(buf.getvalue()).decode()
-                    prompt = draw_prompt or "Solve this handwritten math problem."
+                    prompt = draw_prompt_input or "Solve this handwritten math problem."
 
     with tab_upload:
-        uploaded     = st.file_uploader("Upload Image", type=["png","jpg"], disabled=is_processing)
-        upload_prompt = st.text_input("Question about image (optional)", placeholder="Analyze this image...", disabled=is_processing)
-        if uploaded and st.button("Analyze Image", disabled=is_processing):
-            image_b64 = base64.b64encode(uploaded.getvalue()).decode()
-            prompt    = upload_prompt or "Analyze this image."
+        uploaded_file = st.file_uploader("Upload", type=["png", "jpg"], disabled=is_processing)
+        upload_prompt_input = st.text_input("Question", placeholder="Analyze...", disabled=is_processing, key="upload_prompt_input")
+        if uploaded_file and st.button("Analyze", disabled=is_processing):
+            image_b64 = base64.b64encode(uploaded_file.getvalue()).decode()
+            prompt    = upload_prompt_input or "Analyze this image."
 
-    # ── 3. New user message → optimistic write + rerun ────────────────────────
+    # ── 3. New user message → optimistic UI update + rerun ────────────────────
     if prompt:
         req_id = str(uuid.uuid4())
         add_message("user", prompt, image_data=image_b64, request_id=req_id, sent_to_api=False)
         st.session_state.is_processing = True
         st.rerun()
 
-    # ── 4. Recovery: if we restarted mid-flight, allow retry ──────────────────
-    if session["messages"] and session["messages"][-1]["role"] == "user":
-        last = session["messages"][-1]
-        if last.get("sent_to_api") and not st.session_state.is_processing:
-            last["sent_to_api"] = False
-            save_history()
-
-    # ── 5. Fire API call if last message is unsent user message ───────────────
+    # ── 4. Fire API call if last message is an unsent user message ────────────
     if (
-        session["messages"]
-        and session["messages"][-1]["role"] == "user"
-        and not session["messages"][-1].get("sent_to_api", False)
+        st.session_state.messages
+        and st.session_state.messages[-1]["role"] == "user"
+        and not st.session_state.messages[-1].get("sent_to_api", False)
     ):
-        last = session["messages"][-1]
+        last = st.session_state.messages[-1]
         current_request_id = last.get("request_id") or str(uuid.uuid4())
-        last["request_id"] = current_request_id
+        last["request_id"]  = current_request_id
 
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Agent is thinking..."):
-                try:
-                    last["sent_to_api"] = True
-                    save_history()
-
-                    payload = {
-                        "text":             last["content"],
-                        "image":            last.get("image_data"),
-                        "model_preference": "agent",
-                        "session_id":       st.session_state.active_session_id,
-                        "request_id":       current_request_id,
-                    }
-                    headers = {}
-                    if st.session_state.user:
-                        headers["Authorization"] = f"Bearer {st.session_state.user['token']}"
-
-                    response = requests.post(API_URL, json=payload, headers=headers, timeout=360)
-
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get("status") == "success":
-                            answer_raw = data.get("answer") or data.get("explanation") or "⚠️ No answer returned."
-                            meta       = data.get("metadata", {})
+            status_msg = st.status("Thinking...", expanded=True)
+            logic_placeholder = status_msg.empty()
+            answer_placeholder = st.empty()
+            
+            full_answer = ""
+            logic_trace = []
+            
+            try:
+                last["sent_to_api"] = True
+                payload = {
+                    "text":       last["content"],
+                    "image":      last.get("image_data"),
+                    "session_id": st.session_state.active_session_id,
+                    "request_id": current_request_id,
+                }
+                headers = get_auth_headers()
+                
+                with requests.post(API_URL, json=payload, headers=headers, stream=True, timeout=360) as r:
+                    if r.status_code == 200:
+                        for line in r.iter_lines():
+                            if line:
+                                try:
+                                    data = json.loads(line)
+                                    if data["type"] == "thought":
+                                        logic_trace.append(data["content"])
+                                    elif data["type"] == "action":
+                                        logic_trace.append(f"⚙️ {data['content']}")
+                                    elif data["type"] == "observation":
+                                        logic_trace.append(f"👁️ {data['content']}")
+                                    elif data["type"] == "answer":
+                                        full_answer += data["content"]
+                                        answer_placeholder.markdown(full_answer)
+                                    elif data["type"] == "error":
+                                        st.error(data["content"])
+                                        
+                                    # Update logic trace UI
+                                    logic_placeholder.markdown("\n".join(logic_trace))
+                                except Exception:
+                                    continue
+                        
+                        status_msg.update(label="Solved!", state="complete", expanded=False)
+                        st.session_state.is_processing = False
+                        
+                        if full_answer:
                             add_message(
-                                "assistant",
-                                answer_raw,
-                                reasoning=data.get("explanation"),
-                                metadata={
-                                    "source":     data.get("source", "agent"),
-                                    "model_used": meta.get("model", "gemini-2.5-flash"),
-                                    "latency":    f"{meta.get('latency_ms',0)/1000:.2f}s",
-                                    "tools":      meta.get("tools_used", []),
-                                },
-                                steps=data.get("steps", [])
+                                "assistant", 
+                                full_answer, 
+                                reasoning="\n".join(logic_trace),
+                                metadata={"source": "agent"}
                             )
-                            st.session_state.is_processing = False
-                            st.rerun()   # ← BUG 2 FIX: missing rerun caused blank UI
-
-                        else:
-                            error_msg = data.get("error", "Unknown error")
-                            add_message("assistant", f"⚠️ Error: {error_msg}")
-                            st.session_state.is_processing = False
+                            load_sessions() # Update titles
                             st.rerun()
-
-                    elif response.status_code in [202, 409]:
-                        st.info("ℹ️ Request already processing.")
-                        st.session_state.is_processing = False
+                    elif r.status_code == 401:
+                        _clear_user_state()
+                        st.session_state.user = None
+                        st.error("Session expired. Please log in again.")
                         st.rerun()
-
                     else:
-                        try:
-                            err_msg = response.json().get("error", f"HTTP {response.status_code}")
-                        except Exception:
-                            err_msg = f"HTTP {response.status_code}"
-                        add_message("assistant", f"❌ Server Error: {err_msg}")
+                        st.error(f"Error: {r.status_code}")
                         st.session_state.is_processing = False
-                        st.rerun()
 
-                except Exception as e:
-                    add_message("assistant", f"❌ Connection Failed: {str(e)}")
-                    st.session_state.is_processing = False
-                    st.rerun()
+            except Exception as e:
+                st.error(f"Connection error: {e}")
+                st.session_state.is_processing = False
+                st.rerun()
+
 
 # ====================================================
 # Sidebar
@@ -445,15 +628,30 @@ with st.sidebar:
     st.markdown("### 🧠 MathMinds")
     st.write(f"Logged in as **{st.session_state.user['email']}**")
 
-    view = st.radio("Navigation", ["Chat", "Profile"],
-                    index=0 if st.session_state.current_view == "Chat" else 1)
+    view = st.radio(
+        "Navigation", ["Chat", "Profile"],
+        index=0 if st.session_state.current_view == "Chat" else 1
+    )
     if view != st.session_state.current_view:
         st.session_state.current_view = view
         st.rerun()
 
     if st.button("Sign Out", type="secondary"):
+        # ✅ MULTIUSER FIX: Wipe ALL user-specific state first, THEN clear identity.
+        # Without _clear_user_state() here, the next user to log in on the same
+        # browser tab would see User A's chat history briefly before load_sessions
+        # returns, because st.session_state persists across logins within a tab.
+        _clear_user_state()
         st.session_state.user = None
         st.rerun()
+
+    if st.session_state.is_processing:
+        if st.button(
+            "🔓 Reset Processing Lock", type="primary",
+            help="Use if UI is stuck despite answer finishing."
+        ):
+            st.session_state.is_processing = False
+            st.rerun()
 
     st.divider()
 
@@ -462,26 +660,45 @@ with st.sidebar:
             new_chat()
 
         st.markdown("#### History")
-        sorted_sids = sorted(
-            st.session_state.chat_sessions.keys(),
-            key=lambda k: st.session_state.chat_sessions[k].get("created_at", 0),
-            reverse=True
-        )
-        for sid in sorted_sids:
-            sess    = st.session_state.chat_sessions[sid]
-            title   = sess.get("title", "Untitled")
-            isActive = (sid == st.session_state.active_session_id)
-            col_nav, col_del = st.columns([0.85, 0.15])
-            with col_nav:
-                if st.button(f"{'📍 ' if isActive else ''}{title}", key=sid, use_container_width=True):
+
+        for session in st.session_state.chat_sessions:
+            sid   = session["session_id"]
+            title = session["title"]
+
+            cols = st.columns([0.8, 0.1, 0.1])
+            with cols[0]:
+                is_active = (st.session_state.active_session_id == sid)
+                btn_type  = "primary" if is_active else "secondary"
+                if st.button(title, key=f"sel_{sid}", use_container_width=True, type=btn_type):
                     st.session_state.active_session_id = sid
+                    load_messages(sid)
                     st.rerun()
-            with col_del:
-                if isActive and st.button("🗑️", key=f"del_{sid}"):
+            with cols[1]:
+                if st.button("🖊️", key=f"ren_{sid}", help="Rename"):
+                    st.session_state.renaming_session_id = (
+                        sid if st.session_state.renaming_session_id != sid else None
+                    )
+                    st.rerun()
+            with cols[2]:
+                if st.button("🗑️", key=f"del_{sid}", help="Delete"):
                     delete_chat(sid)
 
-# ── Router ────────────────────────────────────────────────────────────────────
-if st.session_state.current_view == "Profile":
-    profile_interface()
-else:
+            if st.session_state.renaming_session_id == sid:
+                with st.container():
+                    new_title = st.text_input(
+                        "New title", value=title,
+                        key=f"in_{sid}", label_visibility="collapsed"
+                    )
+                    if st.button("Save", key=f"save_{sid}", use_container_width=True):
+                        rename_chat(sid, new_title)
+                        st.session_state.renaming_session_id = None
+                        st.rerun()
+
+
+# ====================================================
+# Main Content Area
+# ====================================================
+if st.session_state.current_view == "Chat":
     chat_interface()
+elif st.session_state.current_view == "Profile":
+    profile_interface()

@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     SUPABASE_KEY: Optional[str] = None
     WOLFRAM_APP_ID: Optional[str] = None
 
+    # Security
+    JWT_SECRET_KEY: str = "super_secret_key_change_me"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 1 Week
+
     model_config = {
         "env_file": ".env",
         "case_sensitive": True,

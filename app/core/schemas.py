@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, Optional, List
 from pydantic import BaseModel, Field, model_validator
 
@@ -58,3 +59,39 @@ class HealthResponse(BaseModel):
     """
     status: str
     version: str
+
+# --- Chat History Schemas ---
+
+class Message(BaseModel):
+    role: str
+    content: str
+    timestamp: datetime
+    reasoning: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    steps: List[str] = []
+
+class ChatSession(BaseModel):
+    session_id: str
+    title: str
+    created_at: datetime
+    # messages: Optional[List[Message]] = None # Optional for listing
+
+class SessionRename(BaseModel):
+    title: str = Field(..., min_length=1, max_length=100)
+
+# --- Auth Schemas ---
+
+class UserSignup(BaseModel):
+    email: str
+    password: str = Field(..., min_length=8, max_length=72)
+    full_name: Optional[str] = None
+
+class UserLogin(BaseModel):
+    email: str
+    password: str = Field(..., max_length=72)
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: str
+    email: str

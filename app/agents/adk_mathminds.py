@@ -1,18 +1,8 @@
-"""
-adk_mathminds.py — MathMinds ADK Agent
-Key changes vs original:
-  1. Semaphore removed. Replaced with Redis-backed daily quota via llm_guard.
-  2. Tenacity retries scoped to 429/rate-limit errors ONLY (not all exceptions),
-     so a quota block is not retried.
-  3. ADK event loop now filters for is_final_response() to avoid
-     collecting tool-call intermediate text.
-  4. Redis client injected via constructor so it can be shared with CacheManager.
-"""
-
 import logging
 import asyncio
 import base64
-from typing import Optional
+import json
+from typing import Optional, AsyncGenerator, Dict, Any
 
 from google.adk.agents import Agent
 from google.adk.runners import Runner
@@ -22,12 +12,11 @@ from google.genai.errors import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from app.core.settings import settings
-from app.core.llm_guard import check_and_increment  # ← new import
+from app.core.llm_guard import check_and_increment
 from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
 from app.tools.similarity_search import SimilarProblemFinder
-from app.core.ocr import OCRProcessor
-from app.tools.vision_analyzer import VisionAnalyzer
+from app.tools.python_executor import PythonInterpreter
 from app.core.math_normalizer import MathQueryNormalizer
 
 logger = logging.getLogger(__name__)
@@ -36,12 +25,12 @@ logger = logging.getLogger(__name__)
 class MathMindsADKAgent:
     """
     Agent-based architecture using Google ADK.
-    Uses a Redis-backed daily quota (not a semaphore) to stay within 20 RPD.
+    Supports real-time streaming of reasoning steps and final answers.
     """
 
-    def __init__(self, model_name: str = "gemini-2.5-flash", redis_client=None):
+    def __init__(self, model_name: str = "gemini-2.0-flash", redis_client=None):
         self.api_key = settings.GOOGLE_API_KEY
-        self.redis_client = redis_client  # injected — shared with CacheManager
+        self.redis_client = redis_client
 
         if not self.api_key:
             logger.warning("No Google API Key found. Agent will fail.")
@@ -51,8 +40,7 @@ class MathMindsADKAgent:
         self.symbolic_solver = SymbolicSolver()
         self.normalizer = MathQueryNormalizer()
         self.similar_finder = SimilarProblemFinder()
-        self.ocr = OCRProcessor()
-        self.vision_analyzer = VisionAnalyzer()
+        self.python_executor = PythonInterpreter()
 
         # ── Tool definitions ──────────────────────────────────────────────────
         async def web_search(query: str) -> str:
@@ -79,6 +67,18 @@ class MathMindsADKAgent:
                 return result.get("content", "No solution found.")
             return f"Error solving math: {result.get('error')}"
 
+        async def execute_python(code: str) -> str:
+            """
+            Execute arbitrary Python code for simulations, complex logic, or data analysis.
+            Use this when SymPy is too restrictive or you need to run a simulation.
+            Args:
+                code: The Python code to execute.
+            """
+            result = await self.python_executor.execute(code)
+            if result.get("status") == "success":
+                return f"Output:\n{result.get('content')}\nResult: {result.get('result')}"
+            return f"Error in Python execution: {result.get('content')}"
+
         def find_similar_problems(query: str) -> str:
             """
             Find similar solved problems from the database for reference.
@@ -93,41 +93,18 @@ class MathMindsADKAgent:
                 formatted += f"Problem: {item.get('problem_text')}\nSolution: {item.get('solution_text')}\n---\n"
             return formatted
 
-        def read_image(image_data: str) -> str:
-            """
-            Extract text/equations from an image using OCR.
-            Args:
-                image_data: Base64 string of the image.
-            """
-            try:
-                text = self.ocr.extract_text(image_data=image_data)
-                return text if text else "No text found in image."
-            except Exception as e:
-                return f"Error reading image: {str(e)}"
-
-        async def analyze_image(image_data: str, focus: str = "") -> str:
-            """
-            Analyze an image mathematically: count objects, describe graphs, extract equations.
-            Args:
-                image_data: Base64 string of the image.
-                focus: Optional focus hint (e.g. 'count red balls').
-            """
-            try:
-                result = self.vision_analyzer.analyze(image_data, focus)
-                return str(result)
-            except Exception as e:
-                return f"Image analysis failed: {str(e)}"
-
         # ── Agent & Runner ────────────────────────────────────────────────────
         self.agent = Agent(
             name="math_minds_core",
             model=model_name,
-            tools=[web_search, math_solver, find_similar_problems, read_image, analyze_image],
+            tools=[web_search, math_solver, execute_python, find_similar_problems],
             instruction=(
                 "You are MathMinds AI, a precise mathematical assistant. "
-                "When an image is provided, analyze it first — extract equations, "
-                "count objects, or interpret graphs. Then combine image analysis with "
-                "the text prompt. Use tools only when needed. Show your reasoning clearly."
+                "You can see images natively! When an image is provided, examine it "
+                "carefully to extract equations, count objects, or interpret graphs. "
+                "\n\nCRITICAL: Always start by explaining your step-by-step approach "
+                "before using any tools. Your internal monologue should be clear "
+                "and explain the reasoning behind your tool choices."
             )
         )
 
@@ -138,7 +115,7 @@ class MathMindsADKAgent:
             session_service=self.session_service
         )
 
-        logger.info("MathMindsADKAgent initialized.")
+        logger.info(f"MathMindsADKAgent initialized with model: {model_name}")
 
     async def solve(
         self,
@@ -146,22 +123,17 @@ class MathMindsADKAgent:
         image_data: Optional[str] = None,
         session_id: str = "default_session",
         user_id: str = "default_user"
-    ) -> str:
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Main entry point. Enforces daily quota before calling the LLM.
-        Returns the agent's answer string, or an error message.
+        Streaming entry point. Yields events as they occur.
         """
 
         # ── 1. Daily quota check ──────────────────────────────────────────────
-        # This is the ONLY gate. One check per user question = one LLM call.
         if self.redis_client:
             allowed, used, limit = check_and_increment(self.redis_client, user_id)
             if not allowed:
-                logger.warning(f"Quota blocked for user={user_id} ({used}/{limit} today)")
-                return (
-                    f"⚠️ Daily limit reached ({limit} questions per day). "
-                    "Please try again tomorrow."
-                )
+                yield {"type": "error", "content": f"⚠️ Daily limit reached ({limit} today)."}
+                return
         else:
             logger.warning("Redis unavailable — skipping quota check (failing open).")
 
@@ -174,66 +146,56 @@ class MathMindsADKAgent:
                 await self.session_service.create_session(
                     app_name="mathminds", user_id=user_id, session_id=session_id
                 )
-        except Exception:
-            try:
-                await self.session_service.create_session(
-                    app_name="mathminds", user_id=user_id, session_id=session_id
-                )
-            except Exception as e:
-                logger.warning(f"Session create warning: {e}")
+        except Exception as e:
+            logger.warning(f"Session setup warning: {e}")
 
         # ── 3. Build message parts ────────────────────────────────────────────
-        parts = [types.Part.from_text(text=problem)]
+        parts = []
+        if problem:
+            parts.append(types.Part.from_text(text=problem))
+        else:
+            parts.append(types.Part.from_text(text="Analyze this image."))
 
         if image_data:
             try:
-                if image_data.startswith("/9j/"):
-                    mime_type = "image/jpeg"
-                elif image_data.startswith("iVBORw"):
-                    mime_type = "image/png"
-                elif image_data.startswith("R0lGOD"):
-                    mime_type = "image/gif"
-                elif image_data.startswith("UklGR"):
-                    mime_type = "image/webp"
-                else:
-                    mime_type = "image/png"
-
                 img_bytes = base64.b64decode(image_data)
+                mime_type = "image/png"  # Default
+                # Basic sniff
+                if image_data.startswith("/9j/"): mime_type = "image/jpeg"
+                elif image_data.startswith("iVBORw"): mime_type = "image/png"
+                
                 parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
-                logger.info("Image attached to agent request.")
             except Exception as e:
-                logger.error(f"Failed to process image: {e}")
-                parts.append(types.Part.from_text(text="[Error: image could not be processed]"))
+                logger.error(f"Image decode failed: {e}")
 
-        # ── 4. Run agent (retry on 429 only, not all exceptions) ─────────────
-        @retry(
-            stop=stop_after_attempt(2),          # max 2 attempts total
-            wait=wait_exponential(multiplier=2, min=5, max=30),
-            retry=retry_if_exception_type(ClientError),  # only retry on API errors
-            reraise=True
-        )
-        async def run_agent_safely() -> str:
-            outcome = ""
+        # ── 4. Run agent (Streaming) ──────────────────────────────────────────
+        try:
             async for event in self.runner.run_async(
                 user_id=user_id,
                 session_id=session_id,
                 new_message=types.Content(role="user", parts=parts)
             ):
-                # ✅ Only collect the final response, not tool-call intermediates
-                if hasattr(event, "is_final_response") and event.is_final_response():
-                    if event.content and event.content.parts:
-                        for part in event.content.parts:
-                            if part.text:
-                                outcome += part.text
-            return outcome
+                # ── Capture Reasoning / Thoughts ──
+                if hasattr(event, "content") and event.content:
+                    for part in event.content.parts:
+                        if part.text:
+                            # We treat intermittent text as reasoning/logic
+                            yield {"type": "thought", "content": part.text}
+                
+                # ── Capture Tool Usage ──
+                if hasattr(event, "tool_call") and event.tool_call:
+                    yield {
+                        "type": "action", 
+                        "content": f"Using tool: {event.tool_call.function_call.name}"
+                    }
 
-        try:
-            response_text = await run_agent_safely()
-            if not response_text:
-                logger.warning("Agent returned empty response.")
-                return "The agent completed but returned no text. Please rephrase your question."
-            return response_text
+                # ── Capture Tool Response ──
+                if hasattr(event, "tool_response") and event.tool_response:
+                     yield {
+                        "type": "observation", 
+                        "content": f"Obtained result from {event.tool_response.function_response.name}"
+                    }
 
         except Exception as e:
-            logger.error(f"ADK Agent execution failed: {e}")
-            return f"Error processing request: {str(e)}"
+            logger.error(f"Streaming execution failed: {e}")
+            yield {"type": "error", "content": str(e)}

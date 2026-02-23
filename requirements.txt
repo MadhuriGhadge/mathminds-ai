@@ -33,6 +33,9 @@ pandas
 gradio
 transformers
 torch
+passlib[bcrypt]
+bcrypt
+PyJWT
 
 selenium
 webdriver-manager

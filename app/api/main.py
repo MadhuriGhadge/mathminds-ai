@@ -1,4 +1,6 @@
-
+import os
+os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+from typing import Any, Dict, Optional, List
 import sys
 import asyncio
 
@@ -6,18 +8,19 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import logging
-import datetime
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 import sys
+import json
 
 from fastapi import FastAPI, HTTPException, status, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.limiter import limiter
 from app.core.orchestrator import Orchestrator
-from app.core.schemas import SolveRequest, SolveResponse, HealthResponse
+from app.core.schemas import SolveRequest, SolveResponse, HealthResponse, Message, ChatSession, SessionRename, UserSignup, UserLogin, TokenResponse
+from app.core.auth_utils import hash_password, verify_password, create_access_token
 from app.core.logging_config import configure_logging
 from app.core.errors import AppError, ErrorCodes, ERROR_MESSAGES
 from app.core.settings import settings  # New settings module
@@ -200,7 +203,7 @@ async def health_check():
     
     return health_status
 
-@app.post("/solve", response_model=SolveResponse)
+@app.post("/solve")
 @limiter.limit("5/minute")
 async def solve_problem(
     request: Request,
@@ -243,55 +246,89 @@ async def solve_problem(
         logger.warning(f"Redis dedup failed (failing open): {e}")
         # If Redis fails, we allow the request to proceed (fail open)
 
-    try:
-        result = await orchestrator.process_problem(
-            text=solve_req.effective_text, 
-            image=solve_req.image, 
-            request_id=final_request_id,
-            model_preference=solve_req.model_preference,
-            session_id=solve_req.session_id,
-            user_id=current_user.get("uid")
-        )
-        
-        # Sanitize metadata for public response
-        public_metadata = result["metadata"].copy()
-        public_metadata.pop("_internal_debug", None)
-        
-        # Map internal result to schema
-        return SolveResponse(
-            request_id=result.get("request_id", final_request_id),
-            status=result["status"],
-            problem_type=result.get("problem_type", "unknown"),
-            source=result.get("source", "unknown"),
-            answer=result.get("answer"),
-            steps=result.get("steps", []),
-            explanation=result.get("explanation"),
-            confidence=result.get("confidence", 0.0),
-            cached=result.get("cached", False),
-            error=result.get("error_msg"), # Keep for backward compat if any
-            error_code=result.get("error_code"),
-            metadata=public_metadata
-        )
+    async def event_generator():
+        try:
+            async for chunk in orchestrator.process_problem(
+                text=solve_req.effective_text, 
+                image=solve_req.image, 
+                request_id=final_request_id,
+                model_preference=solve_req.model_preference,
+                session_id=solve_req.session_id,
+                user_id=current_user.get("uid")
+            ):
+                yield json.dumps(chunk) + "\n"
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+            yield json.dumps({"type": "error", "content": "Internal processing error"}) + "\n"
+        finally:
+            if redis_client:
+                try:
+                    redis_client.delete(dedup_key)
+                except Exception:
+                    pass
 
-    except Exception as e:
-        logger.error(f"[{req_id}] Unhandled error in /solve: {e}")
-        # Return generic error
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={
-                "status": "error",
-                "error": ERROR_MESSAGES[ErrorCodes.INTERNAL_ERROR],
-                "error_code": ErrorCodes.INTERNAL_ERROR,
-                "metadata": {"request_id": req_id}
-            }
-        )
-    finally:
-        # Cleanup deduplication key
-        if redis_client:
-            try:
-                redis_client.delete(dedup_key)
-            except Exception as e:
-                logger.warning(f"Failed to clear dedup key: {e}")
+    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+
+# --- Chat History Endpoints ---
+
+@app.get("/chat/sessions", response_model=List[ChatSession])
+async def list_chat_sessions(
+    current_user: dict = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """List all chat sessions for the current user."""
+    return db_manager.list_sessions(current_user["uid"])
+
+@app.post("/chat/sessions", response_model=ChatSession)
+async def create_chat_session(
+    current_user: dict = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """Create a new chat session."""
+    session_id = str(uuid.uuid4())
+    title = "New Chat"
+    if db_manager.create_session(current_user["uid"], session_id, title):
+        return {
+            "session_id": session_id,
+            "title": title,
+            "created_at": datetime.utcnow()
+        }
+    raise HTTPException(status_code=500, detail="Failed to create session")
+
+@app.get("/chat/sessions/{session_id}/messages", response_model=List[Message])
+async def get_session_history(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """Get message history for a specific session."""
+    history = db_manager.get_chat_history(current_user["uid"], session_id)
+    if not history and history != []:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return history
+
+@app.patch("/chat/sessions/{session_id}")
+async def rename_chat_session(
+    session_id: str,
+    rename_data: SessionRename,
+    current_user: dict = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """Rename a chat session."""
+    if db_manager.rename_session(current_user["uid"], session_id, rename_data.title):
+        return {"status": "success", "title": rename_data.title}
+    raise HTTPException(status_code=404, detail="Session not found or rename failed")
+
+@app.delete("/chat/sessions/{session_id}")
+async def delete_chat_session(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+    db_manager = Depends(get_db_manager)
+):
+    """Delete a chat session."""
+    if db_manager.delete_session(current_user["uid"], session_id):
+        return {"status": "success", "message": "Session deleted"}
+    raise HTTPException(status_code=404, detail="Session not found or delete failed")
 
 # --- User Profile Endpoints ---
 from pydantic import BaseModel
@@ -348,3 +385,64 @@ async def update_profile(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+# ── Auth Endpoints ─────────────────────────────────────────────────────────
+
+@app.post("/auth/signup", response_model=TokenResponse)
+async def signup(
+    user_in: UserSignup,
+    db_manager = Depends(get_db_manager)
+):
+    """Register a new user."""
+    # Check if user already exists
+    existing_user = db_manager.get_user_by_email(user_in.email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User with this email already exists"
+        )
+    
+    user_id = str(uuid.uuid4())
+    hashed_pw = hash_password(user_in.password)
+    
+    user_dict = {
+        "user_id": user_id,
+        "email": user_in.email,
+        "hashed_password": hashed_pw,
+        "full_name": user_in.full_name,
+        "created_at": datetime.now(timezone.utc)
+    }
+    
+    if db_manager.create_user(user_dict):
+        token = create_access_token(data={"sub": user_id, "email": user_in.email})
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user_id": user_id,
+            "email": user_in.email
+        }
+    
+    raise HTTPException(status_code=500, detail="Failed to create user")
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(
+    login_in: UserLogin,
+    db_manager = Depends(get_db_manager)
+):
+    """Login and get access token."""
+    user = db_manager.get_user_by_email(login_in.email)
+    if not user or not verify_password(login_in.password, user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    user_id = user["user_id"]
+    token = create_access_token(data={"sub": user_id, "email": user["email"]})
+    
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user_id": user_id,
+        "email": user["email"]
+    }
