@@ -573,9 +573,14 @@ def chat_interface():
                 
                 with requests.post(API_URL, json=payload, headers=headers, stream=True, timeout=360) as r:
                     if r.status_code == 200:
-                        for line in r.iter_lines():
-                            if line:
+                        for raw_line in r.iter_lines(decode_unicode=True):
+                            if raw_line:
                                 try:
+                                    line = raw_line.strip()
+                                    # Handle optional "data: " prefix if SSE is used
+                                    if line.startswith("data: "):
+                                        line = line[6:].strip()
+                                        
                                     data = json.loads(line)
                                     if data["type"] == "thought":
                                         logic_trace.append(data["content"])
@@ -595,17 +600,15 @@ def chat_interface():
                                     continue
                         
                         status_msg.update(label="Solved!", state="complete", expanded=False)
-                        st.session_state.is_processing = False
                         
-                        if full_answer:
+                        if full_answer or logic_trace:
                             add_message(
                                 "assistant", 
-                                full_answer, 
+                                full_answer if full_answer else "Processed. Check reasoning steps.", 
                                 reasoning="\n".join(logic_trace),
                                 metadata={"source": "agent"}
                             )
-                            load_sessions() # Update titles
-                            st.rerun()
+                        load_sessions() # Refresh titles
                     elif r.status_code == 401:
                         _clear_user_state()
                         st.session_state.user = None
@@ -614,10 +617,15 @@ def chat_interface():
                     else:
                         st.error(f"Error: {r.status_code}")
                         st.session_state.is_processing = False
+                        st.rerun()
 
             except Exception as e:
                 st.error(f"Connection error: {e}")
+            finally:
                 st.session_state.is_processing = False
+                # Final check for unsent user message cleanup
+                if st.session_state.messages and st.session_state.messages[-1].get("role") == "user":
+                    st.session_state.messages[-1]["sent_to_api"] = True
                 st.rerun()
 
 

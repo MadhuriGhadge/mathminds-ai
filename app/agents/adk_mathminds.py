@@ -2,11 +2,13 @@ import logging
 import asyncio
 import base64
 import json
+import contextvars
 from typing import Optional, AsyncGenerator, Dict, Any
 
 from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions.in_memory_session_service import InMemorySessionService
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.genai import types
 from google.genai.errors import ClientError
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -17,10 +19,15 @@ from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
 from app.tools.similarity_search import SimilarProblemFinder
 from app.tools.python_executor import PythonInterpreter
+from app.tools.advanced_ocr import AdvancedOCR
+from app.tools.vision_analyzer import VisionAnalyzer
 from app.core.math_normalizer import MathQueryNormalizer
 
 logger = logging.getLogger(__name__)
 
+
+# Thread-safe context for the current image being processed
+current_image_ctx = contextvars.ContextVar("current_image", default=None)
 
 class MathMindsADKAgent:
     """
@@ -28,7 +35,7 @@ class MathMindsADKAgent:
     Supports real-time streaming of reasoning steps and final answers.
     """
 
-    def __init__(self, model_name: str = "gemini-2.0-flash", redis_client=None):
+    def __init__(self, model_name: str = "gemini-2.5-flash", redis_client=None):
         self.api_key = settings.GOOGLE_API_KEY
         self.redis_client = redis_client
 
@@ -41,6 +48,8 @@ class MathMindsADKAgent:
         self.normalizer = MathQueryNormalizer()
         self.similar_finder = SimilarProblemFinder()
         self.python_executor = PythonInterpreter()
+        self.advanced_ocr = AdvancedOCR()
+        self.vision_analyzer = VisionAnalyzer()
 
         # ── Tool definitions ──────────────────────────────────────────────────
         async def web_search(query: str) -> str:
@@ -79,12 +88,47 @@ class MathMindsADKAgent:
                 return f"Output:\n{result.get('content')}\nResult: {result.get('result')}"
             return f"Error in Python execution: {result.get('content')}"
 
-        def find_similar_problems(query: str) -> str:
+        async def image_interpreter() -> str:
             """
-            Find similar solved problems from the database for reference.
+            Convert handwritten or printed math equations from the CURRENT image into machine-readable LaTeX/text.
+            Use this when you see an image with handwritten or printed math.
+            """
+            image_data = current_image_ctx.get()
+            if not image_data:
+                return "Error: No image provided in current context."
+            
+            try:
+                # Remove base64 prefix if present
+                if "," in image_data:
+                    image_data = image_data.split(",")[1]
+                
+                import base64
+                img_bytes = base64.b64decode(image_data)
+                text = self.advanced_ocr.process_image_bytes(img_bytes)
+                return f"OCR result (LaTeX/Text): {text}" if text else "OCR failed to find text."
+            except Exception as e:
+                return f"Error in Image Interpreter: {str(e)}"
+
+        async def statistical_vision(query: str) -> str:
+            """
+            Analyze the CURRENT image for objects, counting, probability, and statistics.
             Args:
-                query: The math problem to find examples for.
+                query: Specific question about the image (e.g., 'Count the red marbles').
             """
+            image_data = current_image_ctx.get()
+            if not image_data:
+                return "Error: No image provided in current context."
+            
+            result = self.vision_analyzer.analyze(image_data, query)
+            if result.get("status") == "success":
+                quant = result.get("quantitative_analysis")
+                if quant:
+                    return f"Vision Analysis: Found {quant.get('total_objects')} objects. Details: {quant.get('objects')}"
+                return "Vision Analysis: No specific objects counted. Use native vision for qualitative tasks."
+            return f"Error in Statistical Vision: {result.get('error')}"
+
+        def find_similar_problems(query: str) -> str:
+            # ... existing similar finder logic ...
             results = self.similar_finder.search(query, limit=2)
             if not results:
                 return "No similar problems found."
@@ -97,14 +141,20 @@ class MathMindsADKAgent:
         self.agent = Agent(
             name="math_minds_core",
             model=model_name,
-            tools=[web_search, math_solver, execute_python, find_similar_problems],
+            tools=[
+                web_search, math_solver, execute_python, 
+                find_similar_problems, image_interpreter, statistical_vision
+            ],
             instruction=(
-                "You are MathMinds AI, a precise mathematical assistant. "
-                "You can see images natively! When an image is provided, examine it "
-                "carefully to extract equations, count objects, or interpret graphs. "
-                "\n\nCRITICAL: Always start by explaining your step-by-step approach "
-                "before using any tools. Your internal monologue should be clear "
-                "and explain the reasoning behind your tool choices."
+                "You are MathMinds AI, a precise mathematical analytical assistant. "
+                "\n\nVISION GUIDELINES:"
+                "\n1. For HANDWRITTEN equations or text: ALWAYS call `image_interpreter` first. "
+                "It provides specialized OCR precision that native vision might miss."
+                "\n2. For COUNTING, PROBABILITY, or STATISTICS based on images: ALWAYS call `statistical_vision`. "
+                "It uses specialized object detection (YOLO) for accurate quantification."
+                "\n3. Once you have machine-readable data from these tools, use `math_solver` or "
+                "`execute_python` to finalize the solution."
+                "\n\nCRITICAL: Always explain your reasoning before and after using tools."
             )
         )
 
@@ -128,74 +178,92 @@ class MathMindsADKAgent:
         Streaming entry point. Yields events as they occur.
         """
 
-        # ── 1. Daily quota check ──────────────────────────────────────────────
-        if self.redis_client:
-            allowed, used, limit = check_and_increment(self.redis_client, user_id)
-            if not allowed:
-                yield {"type": "error", "content": f"⚠️ Daily limit reached ({limit} today)."}
-                return
-        else:
-            logger.warning("Redis unavailable — skipping quota check (failing open).")
-
-        # ── 2. Session setup ──────────────────────────────────────────────────
+        # ── 1. Set Image Context ──────────────────────────────────────────────
+        token = current_image_ctx.set(image_data)
+        
         try:
-            existing = await self.session_service.get_session(
-                app_name="mathminds", session_id=session_id, user_id=user_id
-            )
-            if not existing:
-                await self.session_service.create_session(
-                    app_name="mathminds", user_id=user_id, session_id=session_id
-                )
-        except Exception as e:
-            logger.warning(f"Session setup warning: {e}")
+            # ── 2. Daily quota check ──────────────────────────────────────────────
+            if self.redis_client:
+                allowed, used, limit = check_and_increment(self.redis_client, user_id)
+                if not allowed:
+                    yield {"type": "error", "content": f"⚠️ Daily limit reached ({limit} today)."}
+                    return
+            else:
+                logger.warning("Redis unavailable — skipping quota check (failing open).")
 
-        # ── 3. Build message parts ────────────────────────────────────────────
-        parts = []
-        if problem:
-            parts.append(types.Part.from_text(text=problem))
-        else:
-            parts.append(types.Part.from_text(text="Analyze this image."))
-
-        if image_data:
+            # ── 2. Session setup ──────────────────────────────────────────────────
             try:
-                img_bytes = base64.b64decode(image_data)
-                mime_type = "image/png"  # Default
-                # Basic sniff
-                if image_data.startswith("/9j/"): mime_type = "image/jpeg"
-                elif image_data.startswith("iVBORw"): mime_type = "image/png"
-                
-                parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
+                existing = await self.session_service.get_session(
+                    app_name="mathminds", session_id=session_id, user_id=user_id
+                )
+                if not existing:
+                    await self.session_service.create_session(
+                        app_name="mathminds", user_id=user_id, session_id=session_id
+                    )
             except Exception as e:
-                logger.error(f"Image decode failed: {e}")
+                logger.warning(f"Session setup warning: {e}")
 
-        # ── 4. Run agent (Streaming) ──────────────────────────────────────────
-        try:
+            # ── 3. Build message parts ────────────────────────────────────────────
+            parts = []
+            if problem:
+                parts.append(types.Part.from_text(text=problem))
+            else:
+                parts.append(types.Part.from_text(text="Analyze this image."))
+
+            if image_data:
+                try:
+                    img_bytes = base64.b64decode(image_data)
+                    mime_type = "image/png"  # Default
+                    # Basic sniff
+                    if image_data.startswith("/9j/"): mime_type = "image/jpeg"
+                    elif image_data.startswith("iVBORw"): mime_type = "image/png"
+                    
+                    parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
+                except Exception as e:
+                    logger.error(f"Image decode failed: {e}")
+
+            # ── 4. Run agent (Streaming) ──────────────────────────────────────────
             async for event in self.runner.run_async(
                 user_id=user_id,
                 session_id=session_id,
-                new_message=types.Content(role="user", parts=parts)
+                new_message=types.Content(role="user", parts=parts),
+                run_config=RunConfig(streaming_mode=StreamingMode.SSE)
             ):
-                # ── Capture Reasoning / Thoughts ──
-                if hasattr(event, "content") and event.content:
-                    for part in event.content.parts:
-                        if part.text:
-                            # We treat intermittent text as reasoning/logic
-                            yield {"type": "thought", "content": part.text}
+                # ── Determine Event Type ──
+                # is_final_response() is usually True for the final user-facing text
+                try:
+                    is_final = event.is_final_response()
+                except Exception:
+                    is_final = False
                 
-                # ── Capture Tool Usage ──
-                if hasattr(event, "tool_call") and event.tool_call:
+                # ── Capture Content (Text) ──
+                if hasattr(event, "content") and event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            # Stream ALL text to the main answer window
+                            # This fixes the "empty answer until refresh" issue.
+                            yield {"type": "answer", "content": part.text}
+                            
+                            # Log terminal responses separately if needed for logic
+                            if is_final:
+                                logger.debug(f"Final response chunk received: {part.text[:50]}...")
+                
+                # ── Capture Tool Usage (Reasoning) ──
+                for fc in event.get_function_calls():
                     yield {
                         "type": "action", 
-                        "content": f"Using tool: {event.tool_call.function_call.name}"
+                        "content": f"Using tool: {fc.name}"
                     }
 
                 # ── Capture Tool Response ──
-                if hasattr(event, "tool_response") and event.tool_response:
+                for fr in event.get_function_responses():
                      yield {
                         "type": "observation", 
-                        "content": f"Obtained result from {event.tool_response.function_response.name}"
+                        "content": f"Obtained result from {fr.name}"
                     }
 
         except Exception as e:
             logger.error(f"Streaming execution failed: {e}")
             yield {"type": "error", "content": str(e)}
+        finally:
+            current_image_ctx.reset(token)

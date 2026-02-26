@@ -61,7 +61,7 @@ class Orchestrator:
             "status":     "success",
             "source":     "agent",
             "answer":     "",
-            "metadata":   {"latency_ms": 0, "model": "gemini-2.0-flash", "tools_used": []},
+            "metadata":   {"latency_ms": 0, "model": "gemini-2.5-flash", "tools_used": []},
         }
 
         try:
@@ -111,7 +111,7 @@ class Orchestrator:
                         "metadata": {"model": "sympy", "tools_used": ["sympy"]}
                     })
                     
-                    self._background_log(query, result_schema, user_id, session_id, cache_key)
+                    self._fire_and_forget_log(query, result_schema, user_id, session_id, cache_key)
                     return
 
             # ── 4. Agentic Streaming Loop ─────────────────────────────────────
@@ -122,21 +122,29 @@ class Orchestrator:
             ):
                 if event["type"] == "thought":
                     yield event
-                elif event["type"] in ("action", "observation"):
+                elif event["type"] == "answer":
+                    full_answer += event["content"]
+                    yield event
+                elif event["type"] in ("thought", "action", "observation"):
+                    label = ""
+                    if event["type"] == "action": label = "⚙️ "
+                    elif event["type"] == "observation": label = "👁️ "
+                    
+                    result_schema["metadata"]["logic_trace"].append(f"{label}{event['content']}")
                     yield event
                 elif event["type"] == "error":
                     yield event
                 else:
-                    # Treat everything else as part of the answer
-                    full_answer += event["content"]
-                    yield {"type": "answer", "content": event["content"]}
+                    # Fallback for any other content
+                    full_answer += str(event.get("content", ""))
+                    yield {"type": "answer", "content": str(event.get("content", ""))}
 
             # ── 5. Finalize ───────────────────────────────────────────────────
             result_schema["answer"] = full_answer
             result_schema["metadata"]["latency_ms"] = int((time.time() - start_time) * 1000)
             
             if full_answer:
-                self._background_log(query, result_schema, user_id, session_id, cache_key)
+                self._fire_and_forget_log(query, result_schema, user_id, session_id, cache_key)
 
         except Exception as e:
             logger.error(f"Orchestrator Error: {e}")
@@ -149,12 +157,19 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Failed to persist message: {e}")
 
-    def _background_log(self, query, schema, user_id, session_id, cache_key):
-        """Fire and forget persistence tasks."""
-        asyncio.create_task(self._persist_message(
+    def _fire_and_forget_log(self, query, schema, user_id, session_id, cache_key):
+        """Fire and forget persistence to avoid blocking the stream completion."""
+        asyncio.create_task(self._persist_log(query, schema, user_id, session_id, cache_key))
+
+    async def _persist_log(self, query, schema, user_id, session_id, cache_key):
+        """Internal awaitable helper."""
+        # Map logic_trace to reasoning for frontend consistency
+        reasoning = "\n".join(schema["metadata"].get("logic_trace", []))
+        
+        await self._persist_message(
             user_id=user_id, session_id=session_id, role="assistant",
-            content=schema["answer"], metadata=schema["metadata"]
-        ))
+            content=schema["answer"], reasoning=reasoning, metadata=schema["metadata"]
+        )
         if settings.ENABLE_CACHE and cache_key:
             self.cache_manager.set_cached_answer(cache_key, schema)
         self.db_manager.save_problem({"content": query}, schema)
