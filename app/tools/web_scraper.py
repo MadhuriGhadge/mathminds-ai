@@ -18,6 +18,18 @@ def run_playwright_sync(query: str, headless: bool, extraction_focus: Optional[s
     user_agent = ua.random
     
     try:
+        # Check if an event loop is already running in this thread
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                 # We are in an asyncio loop! We must use a thread or process.
+                 # For Celery tasks, this shouldn't happen with solo/prefork,
+                 # but for local testing it does.
+                 pass
+        except RuntimeError:
+            pass
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=headless)
             context = browser.new_context(
@@ -92,41 +104,45 @@ def run_playwright_sync(query: str, headless: bool, extraction_focus: Optional[s
 
 class WebScraper:
     """
-    Tool for fetching live data from websites using Playwright.
-    Useful for queries requiring real-time context (e.g., stock prices, weather, news).
+    Tool for fetching live data from websites using a Celery task queue.
+    Offloads heavy browser automation to dedicated workers.
     """
 
     def __init__(self, headless: bool = True):
         self.headless = headless
-        # We use a ProcessPoolExecutor to run Playwright in a separate process.
-        # This is CRITICAL on Windows if the main process uses SelectorEventLoopPolicy,
-        # as Playwright requires ProactorEventLoopPolicy.
-        self.executor = ProcessPoolExecutor(max_workers=1)
 
     async def scrape(self, query: str, extraction_focus: Optional[str] = None) -> Dict[str, Any]:
         """
-        Scrapes data relevant to the query.
-        runs the scraping logic in a separate process.
-        
-        Args:
-            query: The search query or URL.
-            extraction_focus: Optional keyword to focus extraction on.
+        Dispatches a scraping task to Celery and waits for the result.
         """
-        logger.info(f"WebScraper triggered for query: {query}, focus: {extraction_focus}")
+        logger.info(f"WebScraper: Dispatching Celery task for query: {query}")
         
-        loop = asyncio.get_running_loop()
-        
-        # Run in separate process
         try:
-            result = await loop.run_in_executor(
-                self.executor, 
-                functools.partial(run_playwright_sync, query, self.headless, extraction_focus)
-            )
-            return result
-        except Exception as e:
-            logger.error(f"Process execution failed: {e}")
+            from app.worker.tasks import scrape_task
+            
+            # Dispatch to worker
+            task = scrape_task.delay(query, self.headless, extraction_focus)
+            
+            # Wait for result (blocking the coroutine, but not the event loop)
+            # We use a loop/sleep or better, run_in_executor to not block the event loop if .get() is blocking.
+            # Celery's AsyncResult.get() is blocking.
+            
+            import asyncio
+            for _ in range(30): # 30 seconds timeout
+                if task.ready():
+                    return task.result
+                await asyncio.sleep(1)
+            
             return {
                 "source": "web_scraper",
-                "error": f"Process execution failed: {str(e)}",
+                "error": "Scraping task timed out in worker queue.",
+                "status": "error"
+            }
+            
+        except Exception as e:
+            logger.error(f"Celery dispatch failed: {e}")
+            return {
+                "source": "web_scraper",
+                "error": f"Celery dispatch failed: {str(e)}",
                 "status": "error"
             }

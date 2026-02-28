@@ -1,16 +1,33 @@
 import logging
+import firebase_admin
+from firebase_admin import auth, credentials as firebase_credentials
 from fastapi import HTTPException, status, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.core.settings import settings
-from app.core.auth_utils import decode_access_token
 
 logger = logging.getLogger(__name__)
+
+# Initialize Firebase Admin
+_firebase_initialized = False
+try:
+    if settings.FIREBASE_CREDENTIALS_PATH:
+        cred = firebase_credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
+        firebase_admin.initialize_app(cred)
+        _firebase_initialized = True
+        logger.info("Firebase Admin initialized successfully.")
+    else:
+        # Try default/env initialization
+        firebase_admin.initialize_app()
+        _firebase_initialized = True
+        logger.info("Firebase Admin initialized using default credentials.")
+except Exception as e:
+    logger.warning(f"Firebase Admin initialization skipped or failed: {e}")
 
 security = HTTPBearer()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
     """
-    Verifies the Local JWT access token.
+    Verifies the Firebase ID Token.
     Returns the decoded token dict if valid.
     """
     token = credentials.credentials
@@ -24,21 +41,27 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(security))
         logger.info(f"Using MOCK AUTH for token: {token}")
         return {"uid": "dev_user_123", "email": "dev@mathminds.ai"}
 
-    # Use local JWT verification
-    payload = decode_access_token(token)
-    if payload:
-        # Map 'sub' from JWT to 'uid' to maintain compatibility with existing code
+    if not _firebase_initialized:
+        logger.error("Attempted to verify token but Firebase is not initialized.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authentication service unavailable",
+        )
+
+    try:
+        # Verify the ID token from Firebase
+        decoded_token = auth.verify_id_token(token)
         return {
-            "uid": payload.get("sub"),
-            "email": payload.get("email")
+            "uid": decoded_token.get("uid"),
+            "email": decoded_token.get("email")
         }
-    
-    logger.warning(f"Invalid or expired token provided.")
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired authentication credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    except Exception as e:
+        logger.warning(f"Firebase token verification failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 def get_current_user(token: dict = Security(verify_token)):
     """

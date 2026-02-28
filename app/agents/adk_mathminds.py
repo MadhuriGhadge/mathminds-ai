@@ -266,4 +266,9 @@ class MathMindsADKAgent:
             logger.error(f"Streaming execution failed: {e}")
             yield {"type": "error", "content": str(e)}
         finally:
-            current_image_ctx.reset(token)
+            try:
+                current_image_ctx.reset(token)
+            except ValueError:
+                # This can happen if the generator is closed (GeneratorExit) 
+                # in a different task context than where it was started.
+                pass

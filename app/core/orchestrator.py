@@ -61,7 +61,12 @@ class Orchestrator:
             "status":     "success",
             "source":     "agent",
             "answer":     "",
-            "metadata":   {"latency_ms": 0, "model": "gemini-2.5-flash", "tools_used": []},
+            "metadata":   {
+                "latency_ms": 0, 
+                "model": "gemini-2.5-flash", 
+                "tools_used": [],
+                "logic_trace": []
+            },
         }
 
         try:

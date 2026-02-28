@@ -15,6 +15,7 @@ import json
 
 from fastapi import FastAPI, HTTPException, status, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.core.limiter import limiter
@@ -70,6 +71,15 @@ app = FastAPI(
     description="API for solving math problems using Gemini and local reasoning.",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# CORS Configuration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # In production, replace with specific domains
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global Exception Handler (Catch-All)
@@ -385,64 +395,20 @@ async def update_profile(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-# ── Auth Endpoints ─────────────────────────────────────────────────────────
+# ── Auth Endpoints (DECOMMISSIONED - Use Firebase) ──────────────────────────
 
-@app.post("/auth/signup", response_model=TokenResponse)
-async def signup(
-    user_in: UserSignup,
-    db_manager = Depends(get_db_manager)
-):
-    """Register a new user."""
-    # Check if user already exists
-    existing_user = db_manager.get_user_by_email(user_in.email)
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User with this email already exists"
-        )
-    
-    user_id = str(uuid.uuid4())
-    hashed_pw = hash_password(user_in.password)
-    
-    user_dict = {
-        "user_id": user_id,
-        "email": user_in.email,
-        "hashed_password": hashed_pw,
-        "full_name": user_in.full_name,
-        "created_at": datetime.now(timezone.utc)
-    }
-    
-    if db_manager.create_user(user_dict):
-        token = create_access_token(data={"sub": user_id, "email": user_in.email})
-        return {
-            "access_token": token,
-            "token_type": "bearer",
-            "user_id": user_id,
-            "email": user_in.email
-        }
-    
-    raise HTTPException(status_code=500, detail="Failed to create user")
+@app.post("/auth/signup")
+async def signup():
+    """Signups are now handled by Firebase on the frontend."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Local signup is decommissioned. Please use Firebase Auth."
+    )
 
-@app.post("/auth/login", response_model=TokenResponse)
-async def login(
-    login_in: UserLogin,
-    db_manager = Depends(get_db_manager)
-):
-    """Login and get access token."""
-    user = db_manager.get_user_by_email(login_in.email)
-    if not user or not verify_password(login_in.password, user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    
-    user_id = user["user_id"]
-    token = create_access_token(data={"sub": user_id, "email": user["email"]})
-    
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "user_id": user_id,
-        "email": user["email"]
-    }
+@app.post("/auth/login")
+async def login():
+    """Login is now handled by Firebase on the frontend."""
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Local login is decommissioned. Please use Firebase Auth."
+    )

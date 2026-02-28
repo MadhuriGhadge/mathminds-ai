@@ -60,8 +60,7 @@ class Settings(BaseSettings):
             if not self.REDIS_URL:
                 raise ValueError("REDIS_URL must be set in production environment")
             if not self.FIREBASE_CREDENTIALS_PATH:
-                 # Warning for now, might be critical depending on usage
-                 pass 
+                raise ValueError("FIREBASE_CREDENTIALS_PATH must be set in production environment")
 
         # Set Defaults for Development
         else:

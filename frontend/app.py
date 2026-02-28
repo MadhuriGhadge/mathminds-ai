@@ -8,6 +8,7 @@ import uuid
 import time
 from streamlit_drawable_canvas import st_canvas
 from dotenv import load_dotenv
+from firebase_utils import sign_in_with_email, sign_up_with_email
 
 load_dotenv()
 
@@ -300,26 +301,20 @@ def login_screen():
                 if st.form_submit_button("Sign In", use_container_width=True):
                     if email and password:
                         try:
-                            r = requests.post(
-                                f"{BASE_API_URL}/auth/login",
-                                json={"email": email, "password": password},
-                                timeout=30
-                            )
-                            if r.status_code == 200:
-                                d = r.json()
+                            token, uid, user_email, error = sign_in_with_email(email, password)
+                            if token:
                                 # ✅ MULTIUSER FIX: Clear ALL previous user data
-                                # BEFORE setting the new user identity.
                                 _clear_user_state()
                                 st.session_state.user = {
-                                    "email": d["email"],
-                                    "token": d["access_token"],
-                                    "uid":   d["user_id"]
+                                    "email": user_email,
+                                    "token": token,
+                                    "uid":   uid
                                 }
-                                st.success(f"Welcome back, {d['email']}!")
+                                st.success(f"Welcome back, {user_email}!")
                                 time.sleep(0.5)
                                 st.rerun()
                             else:
-                                st.error(f"Login Failed: {r.json().get('detail', 'Unknown error')}")
+                                st.error(f"Login Failed: {error}")
                         except Exception as e:
                             st.error(f"Connection Error: {e}")
                     else:
@@ -337,29 +332,20 @@ def login_screen():
                             st.error("Passwords do not match!")
                         else:
                             try:
-                                r = requests.post(
-                                    f"{BASE_API_URL}/auth/signup",
-                                    json={
-                                        "email":     new_email,
-                                        "password":  new_password,
-                                        "full_name": full_name
-                                    },
-                                    timeout=30
-                                )
-                                if r.status_code == 200:
-                                    d = r.json()
+                                token, uid, user_email, error = sign_up_with_email(new_email, new_password)
+                                if token:
                                     # ✅ MULTIUSER FIX: Same as login — clear first
                                     _clear_user_state()
                                     st.session_state.user = {
-                                        "email": d["email"],
-                                        "token": d["access_token"],
-                                        "uid":   d["user_id"]
+                                        "email": user_email,
+                                        "token": token,
+                                        "uid":   uid
                                     }
-                                    st.success(f"Account Created! Welcome, {d['email']}!")
+                                    st.success(f"Account Created! Welcome, {user_email}!")
                                     time.sleep(0.5)
                                     st.rerun()
                                 else:
-                                    st.error(f"Sign Up Failed: {r.json().get('detail', 'Unknown error')}")
+                                    st.error(f"Sign Up Failed: {error}")
                             except Exception as e:
                                 st.error(f"Connection Error: {e}")
                     else:
