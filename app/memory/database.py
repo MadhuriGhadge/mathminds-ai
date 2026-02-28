@@ -1,7 +1,7 @@
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional, List
+from app.core.settings import settings
 
 import pymongo
 from pymongo import IndexModel, ASCENDING
@@ -24,7 +24,7 @@ class DatabaseManager:
             mongo_uri: MongoDB connection string.
             client: Existing PyMongo client (shared pool).
         """
-        self.mongo_uri = mongo_uri or os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+        self.mongo_uri = mongo_uri or settings.MONGO_URI
         self.client = None
         self.db = None
         self.collection = None
@@ -45,9 +45,11 @@ class DatabaseManager:
             self.client.server_info()
             
             # Setup DB and collection
-            db_name = "mathminds_ai"
+            db_name = settings.MONGO_DB_NAME
             try:
-                uri_db = pymongo.uri_parser.parse_uri(self.mongo_uri).get('database')
+                # If URI contains a DB name, it will override the setting default
+                parsed_uri = pymongo.uri_parser.parse_uri(self.mongo_uri)
+                uri_db = parsed_uri.get('database')
                 if uri_db:
                     db_name = uri_db
             except Exception:

@@ -2,6 +2,7 @@ import json
 import logging
 import os
 from typing import Any, Dict, Optional
+from app.core.settings import settings
 
 import redis
 from redis.exceptions import RedisError
@@ -23,7 +24,7 @@ class CacheManager:
             redis_url: Redis connection string (used if pool not provided).
             connection_pool: Existing Redis connection pool.
         """
-        self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        self.redis_url = redis_url or settings.REDIS_URL
         self.redis_client = None
         
         try:

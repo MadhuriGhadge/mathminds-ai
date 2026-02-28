@@ -107,8 +107,8 @@ st.markdown("""
 # ====================================================
 # Config
 # ====================================================
-BASE_API_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-API_URL = f"{BASE_API_URL}/solve"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+API_URL = f"{BACKEND_URL}/solve"
 
 
 # ====================================================
@@ -154,7 +154,7 @@ def load_sessions():
     """Fetch THIS user's chat sessions from the backend and populate state."""
     try:
         headers = get_auth_headers()
-        response = requests.get(f"{BASE_API_URL}/chat/sessions", headers=headers, timeout=30)
+        response = requests.get(f"{BACKEND_URL}/chat/sessions", headers=headers, timeout=30)
         if response.status_code == 200:
             st.session_state.chat_sessions = response.json()
             # Mark that we've successfully loaded data for this specific user
@@ -197,7 +197,7 @@ def load_messages(session_id):
     try:
         headers = get_auth_headers()
         response = requests.get(
-            f"{BASE_API_URL}/chat/sessions/{session_id}/messages",
+            f"{BACKEND_URL}/chat/sessions/{session_id}/messages",
             headers=headers, timeout=30
         )
         if response.status_code == 200:
@@ -232,7 +232,7 @@ def add_message(role, content, sent_to_api=False, **kwargs):
 def new_chat():
     try:
         headers = get_auth_headers()
-        response = requests.post(f"{BASE_API_URL}/chat/sessions", headers=headers, timeout=30)
+        response = requests.post(f"{BACKEND_URL}/chat/sessions", headers=headers, timeout=30)
         if response.status_code == 200:
             new_s = response.json()
             st.session_state.active_session_id = new_s["session_id"]
@@ -248,7 +248,7 @@ def new_chat():
 def delete_chat(sid):
     try:
         headers = get_auth_headers()
-        response = requests.delete(f"{BASE_API_URL}/chat/sessions/{sid}", headers=headers, timeout=30)
+        response = requests.delete(f"{BACKEND_URL}/chat/sessions/{sid}", headers=headers, timeout=30)
         if response.status_code == 200:
             if st.session_state.active_session_id == sid:
                 st.session_state.active_session_id = None
@@ -265,7 +265,7 @@ def rename_chat(sid, new_title):
     try:
         headers = get_auth_headers()
         response = requests.patch(
-            f"{BASE_API_URL}/chat/sessions/{sid}",
+            f"{BACKEND_URL}/chat/sessions/{sid}",
             headers=headers, json={"title": new_title}, timeout=30
         )
         if response.status_code == 200:
@@ -387,7 +387,7 @@ def profile_interface():
 
     if "profile_data" not in st.session_state:
         try:
-            r = requests.get(f"{BASE_API_URL}/users/profile", headers=headers, timeout=30)
+            r = requests.get(f"{BACKEND_URL}/users/profile", headers=headers, timeout=30)
             st.session_state.profile_data = r.json() if r.status_code == 200 else {}
         except Exception:
             st.session_state.profile_data = {}
@@ -410,7 +410,7 @@ def profile_interface():
         if st.form_submit_button("Save Profile", use_container_width=True, type="primary"):
             payload = {"display_name": display_name, "math_level": math_level, "interests": interests}
             try:
-                r = requests.post(f"{BASE_API_URL}/users/profile", json=payload, headers=headers)
+                r = requests.post(f"{BACKEND_URL}/users/profile", json=payload, headers=headers)
                 if r.status_code == 200:
                     st.success("Profile updated!")
                     st.session_state.profile_data = payload

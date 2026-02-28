@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     
     # API Config
     API_HOST: str = "0.0.0.0"
-    API_PORT: int = 8000
+    PORT: int = 8000  # Standard Render/Cloud Run env var
     LOG_LEVEL: str = "INFO"
     TIMEOUT_SECONDS: int = 120
     
