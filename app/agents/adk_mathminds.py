@@ -91,7 +91,8 @@ class MathMindsADKAgent:
         async def image_interpreter() -> str:
             """
             Convert handwritten or printed math equations from the CURRENT image into machine-readable LaTeX/text.
-            Use this when you see an image with handwritten or printed math.
+            Use this for recognizing symbols, numbers, and formulas. 
+            DO NOT use this for interpreting graphs, geometry, or spatial relationships.
             """
             image_data = current_image_ctx.get()
             if not image_data:
@@ -111,7 +112,9 @@ class MathMindsADKAgent:
 
         async def statistical_vision(query: str) -> str:
             """
-            Analyze the CURRENT image for objects, counting, probability, and statistics.
+            Analyze the CURRENT image for objects, counting, grouping, and basic visual set statistics.
+            Use this for 'How many...?' or 'Find all...'.
+            DO NOT use this for coordinate extraction from line graphs, plot analysis, or geometry.
             Args:
                 query: Specific question about the image (e.g., 'Count the red marbles').
             """
@@ -150,9 +153,11 @@ class MathMindsADKAgent:
                 "\n\nVISION GUIDELINES:"
                 "\n1. For HANDWRITTEN equations or text: ALWAYS call `image_interpreter` first. "
                 "It provides specialized OCR precision that native vision might miss."
-                "\n2. For COUNTING, PROBABILITY, or STATISTICS based on images: ALWAYS call `statistical_vision`. "
+                "\n2. For COUNTING or OBJECT DETECTION: ALWAYS call `statistical_vision`. "
                 "It uses specialized object detection (YOLO) for accurate quantification."
-                "\n3. Once you have machine-readable data from these tools, use `math_solver` or "
+                "\n3. For GRAPHS, PLOTS, COORDINATE GEOMETRY, or LOG DIAGRAMS: DO NOT use specialized tools. "
+                "Rely on your NATIVE MULTIMODAL VISION to interpret coordinates, slopes, and trends directly."
+                "\n4. Once you have machine-readable data from these tools, use `math_solver` or "
                 "`execute_python` to finalize the solution."
                 "\n\nCRITICAL: Always explain your reasoning before and after using tools."
             )

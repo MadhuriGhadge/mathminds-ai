@@ -82,6 +82,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health_check():
+    """System health check for container orchestration."""
+    health = {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "services": {
+            "api": "online"
+        }
+    }
+    
+    # Check Redis
+    try:
+        from app.api.deps import get_redis_client
+        r = get_redis_client()
+        r.ping()
+        health["services"]["redis"] = "online"
+    except Exception:
+        health["services"]["redis"] = "offline"
+        health["status"] = "degraded"
+
+    # Check MongoDB
+    try:
+        from app.api.deps import get_mongo_client
+        m = get_mongo_client()
+        m.admin.command('ping')
+        health["services"]["mongodb"] = "online"
+    except Exception:
+        health["services"]["mongodb"] = "offline"
+        health["status"] = "degraded"
+
+    return health
+
 # Global Exception Handler (Catch-All)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):

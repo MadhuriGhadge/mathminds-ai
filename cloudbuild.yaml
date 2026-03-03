@@ -1,22 +1,52 @@
 steps:
-  # Build the container image
+  # 1. Build the API/Worker image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/mathminds', '.']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/mathminds-backend:latest', '.']
   
-  # Push the container image to Container Registry
+  # 2. Build the Frontend image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/mathminds']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/mathminds-frontend:latest', '-f', 'frontend/Dockerfile', '.']
   
-  # Deploy container image to Cloud Run
+  # 3. Push images
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/mathminds-backend:latest']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/mathminds-frontend:latest']
+  
+  # 4. Deploy API
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       - 'run'
       - 'deploy'
       - 'mathminds-api'
-      - '--image=gcr.io/$PROJECT_ID/mathminds'
+      - '--image=gcr.io/$PROJECT_ID/mathminds-backend:latest'
       - '--region=us-central1'
-      - '--platform=managed'
       - '--allow-unauthenticated'
+      - '--set-env-vars=ENV=production'
+
+  # 5. Deploy Frontend
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'mathminds-frontend'
+      - '--image=gcr.io/$PROJECT_ID/mathminds-frontend:latest'
+      - '--region=us-central1'
+      - '--allow-unauthenticated'
+
+  # 6. Deploy Worker (as a job or long-running service - Cloud Run supports this now)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'mathminds-worker'
+      - '--image=gcr.io/$PROJECT_ID/mathminds-backend:latest'
+      - '--region=us-central1'
+      - '--command=celery,-A,app.worker.celery_app,worker,--loglevel=info,--pool=solo'
+
 images:
-  - 'gcr.io/$PROJECT_ID/mathminds'
+  - 'gcr.io/$PROJECT_ID/mathminds-backend:latest'
+  - 'gcr.io/$PROJECT_ID/mathminds-frontend:latest'

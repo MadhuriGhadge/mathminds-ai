@@ -154,7 +154,12 @@ def load_sessions():
     """Fetch THIS user's chat sessions from the backend and populate state."""
     try:
         headers = get_auth_headers()
-        response = requests.get(f"{BACKEND_URL}/chat/sessions", headers=headers, timeout=30)
+        try:
+            response = requests.get(f"{BACKEND_URL}/chat/sessions", headers=headers, timeout=10)
+        except requests.exceptions.ConnectionError:
+            st.info("⌛ **MathMinds API is warming up...** Please wait a few seconds.")
+            st.stop()
+        
         if response.status_code == 200:
             st.session_state.chat_sessions = response.json()
             # Mark that we've successfully loaded data for this specific user
