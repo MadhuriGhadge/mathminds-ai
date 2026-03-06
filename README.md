@@ -22,14 +22,13 @@ The final objective is to build **"MathMinds AI,"** an intelligent analytical we
   - Store user sessions, problem states, solution logs and allow users to revisit and refine earlier problems.
 
 ## Architecture
-- **Frontend**: Streamlit or Gradio for interactive demos; future web UI for production.
+- **Frontend**: Streamlit interactive web UI.
 - **Backend**: FastAPI serving endpoints for OCR, solver, web-scraping, image analysis, and retrieval.
 - **DB / Storage**: MongoDB for session/state and metadata; vector DB (or embeddings layer) for semantic retrieval.
 - **AI components**:
-  - OCR + Math parser (e.g., Tesseract + custom tokenizer / LaTeX converter)
+  - OCR + Math parser (e.g., TrOCR/ LaTeX converter)
   - Language model + prompt pipelines for understanding word problems and code generation
-  - Embedding generator (OpenAI or local) and approximate nearest neighbors for retrieval
-  - Small numerical solver modules (sympy, numpy, scipy) for symbolic and numeric solutions
+  - Small numerical solver module (sympy) for symbolic and numeric solutions
 - **Dev tooling**: Git, Docker, CI for tests and deploy, unit/integration tests for solver correctness.
 
 ## Tech stack
@@ -38,6 +37,6 @@ The final objective is to build **"MathMinds AI,"** an intelligent analytical we
 - Streamlit / Gradio (frontend prototypes)  
 - MongoDB + PyMongo (state & logs)  
 - SymPy / NumPy / SciPy (math solving)  
-- OCR tooling (Tesseract / ML-based OCR)  
+- OCR tooling (TrOCR)  
 - LLM providers or local models (for natural language understanding and code generation)  
-- Vector embeddings + FAISS / Pinecone / Supabase (for retrieval)
+- Vector embeddings +Supabase (for retrieval)
