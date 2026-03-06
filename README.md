@@ -34,9 +34,9 @@ The final objective is to build **"MathMinds AI,"** an intelligent analytical we
 ## Tech stack
 - Python 3.10+  
 - FastAPI (backend)  
-- Streamlit / Gradio (frontend prototypes)  
+- Streamlit (frontend prototypes)  
 - MongoDB + PyMongo (state & logs)  
-- SymPy / NumPy / SciPy (math solving)  
+- SymPy (for math solving)  
 - OCR tooling (TrOCR)  
 - LLM providers or local models (for natural language understanding and code generation)  
 - Vector embeddings +Supabase (for retrieval)
