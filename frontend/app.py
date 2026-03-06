@@ -442,6 +442,12 @@ def chat_interface():
     active_sess = get_active_session()
     st.title(active_sess["title"] if active_sess else "Chat")
 
+    # ✅ SELF-HEALING: Reset processing lock if assistant has already replied
+    if st.session_state.is_processing and st.session_state.messages:
+        if st.session_state.messages[-1]["role"] == "assistant":
+             st.session_state.is_processing = False
+             # No rerun needed here, just continue to render
+
     # ── 1. Render history ─────────────────────────────────────────────────────
     for msg in st.session_state.messages:
         role = msg["role"]
@@ -592,23 +598,16 @@ def chat_interface():
                         
                         status_msg.update(label="Solved!", state="complete", expanded=False)
                         
-                        if full_answer or logic_trace:
-                            add_message(
-                                "assistant", 
-                                full_answer if full_answer else "Processed. Check reasoning steps.", 
-                                reasoning="\n".join(logic_trace),
-                                metadata={"source": "agent"}
-                            )
+                        # Force sync with database to ensure UI has the latest persisted state
+                        if st.session_state.active_session_id:
+                            load_messages(st.session_state.active_session_id)
                         load_sessions() # Refresh titles
                     elif r.status_code == 401:
                         _clear_user_state()
                         st.session_state.user = None
                         st.error("Session expired. Please log in again.")
-                        st.rerun()
                     else:
                         st.error(f"Error: {r.status_code}")
-                        st.session_state.is_processing = False
-                        st.rerun()
 
             except Exception as e:
                 st.error(f"Connection error: {e}")

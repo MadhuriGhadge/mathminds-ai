@@ -17,14 +17,15 @@ gunicorn
 paddlepaddle
 paddleocr
 Pillow
-playwright
+# Scraping retired (Switched to Native Grounding)
+# playwright
 wolframalpha
 sympy
 ultralytics
 streamlit-drawable-canvas
 pydantic-settings
-beautifulsoup4
-fake-useragent
+# beautifulsoup4
+# fake-useragent
 ollama
 firebase-admin
 supabase
@@ -39,4 +40,5 @@ PyJWT
 
 selenium
 webdriver-manager
+# google-cloud-discoveryengine
 google-adk @ git+https://github.com/google/adk-python.git@main

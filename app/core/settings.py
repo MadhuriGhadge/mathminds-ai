@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     # Core API Keys (Required)
     GOOGLE_API_KEY: str
     GOOGLE_CLOUD_PROJECT: Optional[str] = None
+    
+    # Vertex AI Search (Grounding/Discovery Engine)
+    VERTEX_SEARCH_PROJECT_ID: Optional[str] = None
+    VERTEX_SEARCH_LOCATION: str = "global"
+    VERTEX_SEARCH_DATA_STORE_ID: Optional[str] = None
 
     
     # Environment
@@ -61,6 +66,10 @@ class Settings(BaseSettings):
                 raise ValueError("REDIS_URL must be set in production environment")
             if not self.FIREBASE_CREDENTIALS_PATH:
                 raise ValueError("FIREBASE_CREDENTIALS_PATH must be set in production environment")
+            if not self.VERTEX_SEARCH_DATA_STORE_ID:
+                # We allow it to be empty if the user wants to fallback to scraping, 
+                # but for 100% production readiness we should warn.
+                logger.warning("VERTEX_SEARCH_DATA_STORE_ID is not set. Scraper will use fallback logic.")
 
         # Set Defaults for Development
         else:

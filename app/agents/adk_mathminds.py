@@ -15,7 +15,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 
 from app.core.settings import settings
 from app.core.llm_guard import check_and_increment
-from app.tools.web_scraper import WebScraper
 from app.tools.symbolic_solver import SymbolicSolver
 from app.tools.similarity_search import SimilarProblemFinder
 from app.tools.python_executor import PythonInterpreter
@@ -43,7 +42,6 @@ class MathMindsADKAgent:
             logger.warning("No Google API Key found. Agent will fail.")
 
         # Tool instances
-        self.web_scraper = WebScraper(headless=True)
         self.symbolic_solver = SymbolicSolver()
         self.normalizer = MathQueryNormalizer()
         self.similar_finder = SimilarProblemFinder()
@@ -51,17 +49,31 @@ class MathMindsADKAgent:
         self.advanced_ocr = AdvancedOCR()
         self.vision_analyzer = VisionAnalyzer()
 
-        # ── Tool definitions ──────────────────────────────────────────────────
+        # Tool definitions
         async def web_search(query: str) -> str:
             """
             Search the internet for current data: prices, news, weather, facts.
             Args:
                 query: The search query.
             """
-            result = await self.web_scraper.scrape(query)
-            if result.get("status") == "success":
-                return result.get("content", "No content found.")
-            return f"Error searching web: {result.get('error')}"
+            from google import genai
+            from google.genai import types
+            
+            # Using a lightweight flash model for the grounded search
+            search_client = genai.Client(api_key=self.api_key)
+            try:
+                response = search_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=f"Find the latest information for: {query}",
+                    config=types.GenerateContentConfig(
+                        tools=[types.Tool(google_search=types.GoogleSearchRetrieval())],
+                        temperature=0.0
+                    )
+                )
+                return response.text or "No specific information found."
+            except Exception as e:
+                logger.error(f"Native Grounding failed: {e}")
+                return f"Error searching web: {str(e)}"
 
         async def math_solver(problem: str) -> str:
             """
@@ -157,9 +169,14 @@ class MathMindsADKAgent:
                 "It uses specialized object detection (YOLO) for accurate quantification."
                 "\n3. For GRAPHS, PLOTS, COORDINATE GEOMETRY, or LOG DIAGRAMS: DO NOT use specialized tools. "
                 "Rely on your NATIVE MULTIMODAL VISION to interpret coordinates, slopes, and trends directly."
-                "\n4. Once you have machine-readable data from these tools, use `math_solver` or "
-                "`execute_python` to finalize the solution."
-                "\n\nCRITICAL: Always explain your reasoning before and after using tools."
+                "\n\nSOLVING & INTERPRETATION GUIDELINES:"
+                "\n1. Once you have machine-readable data, use `math_solver` or `execute_python` to solve."
+                "\n2. IF `math_solver` FAILS or returns an empty result: Immediately attempt the problem using `execute_python`. "
+                "In Python, you can use specialized libraries like `numpy`, `scipy`, or `sympy` for numerical and symbolic solutions."
+                "\n3. INTERPRET LATEX: Tool outputs (especially from SymPy) are often in raw LaTeX. "
+                "NEVER just display the raw LaTeX to the user. Always explain the steps in clear English. "
+                "Wrap LaTeX in `$ ... $` for inline or `$$ ... $$` for blocks so the UI renders it properly."
+                "\n\nCRITICAL: Always explain your reasoning before and after using tools. If a tool fails, explain WHY and try a different approach."
             )
         )
 

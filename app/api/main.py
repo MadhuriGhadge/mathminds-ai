@@ -3,7 +3,7 @@ os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
 from typing import Any, Dict, Optional, List
 import sys
 import asyncio
-
+    
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -72,6 +72,9 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+@app.get("/")
+async def root():
+    return {"message": "MathMinds API running"}
 
 # CORS Configuration
 app.add_middleware(
@@ -427,7 +430,8 @@ async def update_profile(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 8080))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 # ── Auth Endpoints (DECOMMISSIONED - Use Firebase) ──────────────────────────
 
 @app.post("/auth/signup")

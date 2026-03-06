@@ -43,9 +43,13 @@ steps:
       - 'run'
       - 'deploy'
       - 'mathminds-worker'
-      - '--image=gcr.io/$PROJECT_ID/mathminds-backend:latest'
-      - '--region=us-central1'
+      - '--set-env-vars=ENV=production,REDIS_URL=$_REDIS_URL,MONGO_URI=$_MONGO_URI'
+      - '--min-instances=1'
       - '--command=celery,-A,app.worker.celery_app,worker,--loglevel=info,--pool=solo'
+
+substitutions:
+  _REDIS_URL: "redis://localhost:6379/0"
+  _MONGO_URI: "mongodb://localhost:27017/mathminds"
 
 images:
   - 'gcr.io/$PROJECT_ID/mathminds-backend:latest'
