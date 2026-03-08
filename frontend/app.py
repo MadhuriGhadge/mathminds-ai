@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import json
 import base64
 from PIL import Image
 import io
@@ -206,7 +207,35 @@ def load_messages(session_id):
             headers=headers, timeout=30
         )
         if response.status_code == 200:
-            st.session_state.messages = response.json()
+            server_messages = response.json()
+            local_messages = st.session_state.get("messages", [])
+
+            # ✅ INDESTRUCTIBLE MERGE LOGIC
+            # 1. Start with server messages as the definitive baseline.
+            merged = []
+            server_keys = set()
+            for m in server_messages:
+                merged.append(m)
+                rid = m.get("request_id")
+                role = m.get("role")
+                if rid and role:
+                    server_keys.add((role, rid))
+
+            # 2. Append local messages that have NOT yet reached the server.
+            # This protects local "optimistic" messages from vanishing if DB is slow.
+            for lm in local_messages:
+                rid = lm.get("request_id")
+                role = lm.get("role")
+                if rid and role:
+                    if (role, rid) not in server_keys:
+                        merged.append(lm)
+                elif not rid:
+                    # Fallback for messages without IDs (should be rare)
+                    content_prefix = str(lm.get("content", ""))[:50]
+                    if not any(str(sm.get("content", "")).startswith(content_prefix) for sm in server_messages):
+                        merged.append(lm)
+
+            st.session_state.messages = merged
         elif response.status_code == 404:
             # Session doesn't belong to this user — clear silently
             st.session_state.messages = []
@@ -216,6 +245,7 @@ def load_messages(session_id):
             st.session_state.messages = []
             st.error(f"Failed to load messages: {response.status_code}")
     except Exception as e:
+        logger.error(f"Error loading messages: {e}")
         st.error(f"Error loading messages: {e}")
         st.session_state.messages = []
 
@@ -227,9 +257,15 @@ def get_active_session():
     return None
 
 
-def add_message(role, content, sent_to_api=False, **kwargs):
+def add_message(role, content, sent_to_api=False, request_id=None, **kwargs):
     """Optimistic UI update only — persistence happens in the backend via /solve."""
-    msg = {"role": role, "content": content, "timestamp": time.time(), "sent_to_api": sent_to_api}
+    msg = {
+        "role": role, 
+        "content": content, 
+        "timestamp": time.time(), 
+        "sent_to_api": sent_to_api,
+        "request_id": request_id
+    }
     msg.update(kwargs)
     st.session_state.messages.append(msg)
 
@@ -476,9 +512,7 @@ def chat_interface():
                     if badges:
                         st.markdown(badges, unsafe_allow_html=True)
 
-                if msg.get("reasoning") or msg.get("explanation"):
-                    with st.expander("Show Reasoning Steps"):
-                        st.markdown(msg.get("reasoning") or msg.get("explanation"))
+                # Reasoning display removed as per user request
 
                 content = msg["content"]
                 if isinstance(content, dict) and "final_answer" in content:
@@ -547,76 +581,92 @@ def chat_interface():
         and not st.session_state.messages[-1].get("sent_to_api", False)
     ):
         last = st.session_state.messages[-1]
-        current_request_id = last.get("request_id") or str(uuid.uuid4())
-        last["request_id"]  = current_request_id
+        request_id = last.get("request_id") or str(uuid.uuid4())
+        last["request_id"]  = request_id
+        # ✅ CRITICAL: Mark as sent immediately to prevent re-triggering during streaming
+        last["sent_to_api"] = True
 
         with st.chat_message("assistant", avatar="🤖"):
-            status_msg = st.status("Thinking...", expanded=True)
-            logic_placeholder = status_msg.empty()
+            status_msg = st.status("Thinking...", expanded=False)
             answer_placeholder = st.empty()
             
             full_answer = ""
             logic_trace = []
             
             try:
-                last["sent_to_api"] = True
+                # Prepare SSE Session
                 payload = {
-                    "text":       last["content"],
-                    "image":      last.get("image_data"),
+                    "text": last["content"],
+                    "image": last.get("image_data"),
                     "session_id": st.session_state.active_session_id,
-                    "request_id": current_request_id,
+                    "request_id": request_id
                 }
                 headers = get_auth_headers()
-                
-                with requests.post(API_URL, json=payload, headers=headers, stream=True, timeout=360) as r:
+                with requests.post(f"{BACKEND_URL}/solve", json=payload, headers=headers, stream=True, timeout=360) as r:
                     if r.status_code == 200:
-                        for raw_line in r.iter_lines(decode_unicode=True):
-                            if raw_line:
-                                try:
-                                    line = raw_line.strip()
-                                    # Handle optional "data: " prefix if SSE is used
-                                    if line.startswith("data: "):
-                                        line = line[6:].strip()
-                                        
-                                    data = json.loads(line)
-                                    if data["type"] == "thought":
-                                        logic_trace.append(data["content"])
-                                    elif data["type"] == "action":
-                                        logic_trace.append(f"⚙️ {data['content']}")
-                                    elif data["type"] == "observation":
-                                        logic_trace.append(f"👁️ {data['content']}")
-                                    elif data["type"] == "answer":
-                                        full_answer += data["content"]
-                                        answer_placeholder.markdown(full_answer)
-                                    elif data["type"] == "error":
-                                        st.error(data["content"])
-                                        
-                                    # Update logic trace UI
-                                    logic_placeholder.markdown("\n".join(logic_trace))
-                                except Exception:
-                                    continue
+                        line_buffer = ""
+                        last_ui_update = time.time()
                         
+                        # ✅ ZERO-BUFFER BYTE STREAMING
+                        for chunk in r.iter_content(chunk_size=None, decode_unicode=True):
+                            if chunk:
+                                line_buffer += chunk
+                                while "\n" in line_buffer:
+                                    line, line_buffer = line_buffer.split("\n", 1)
+                                    line = line.strip()
+                                    if not line: continue
+                                    
+                                    try:
+                                        if line.startswith("data:"):
+                                            line = line[len("data:"):].strip()
+                                        
+                                        data = json.loads(line)
+                                        ev_type = data.get("type", "")
+                                        
+                                        if ev_type == "answer":
+                                            content = data.get("content", "")
+                                            full_answer += content
+                                            # ✅ RATE-LIMITED UI UPDATE (Smooth @ 20fps)
+                                            if time.time() - last_ui_update > 0.05:
+                                                answer_placeholder.markdown(full_answer + "▌")
+                                                last_ui_update = time.time()
+                                        elif ev_type in ("thought", "action", "observation"):
+                                            content = data.get("content", "")
+                                            if content:
+                                                logic_trace.append(content)
+                                                status_msg.update(label=f"⚙️ {content}", state="running", expanded=False)
+                                    except Exception:
+                                        continue
+                        
+                        # ✅ FINAL FLUSH
+                        if line_buffer.strip():
+                            try:
+                                line = line_buffer.strip()
+                                if line.startswith("data:"): line = line[len("data:"):].strip()
+                                data = json.loads(line)
+                                if data.get("type") == "answer":
+                                    full_answer += data.get("content", "")
+                            except Exception: pass
+
+                        # Finalize
+                        answer_placeholder.markdown(full_answer if full_answer else "No answer received.")
                         status_msg.update(label="Solved!", state="complete", expanded=False)
                         
-                        # Force sync with database to ensure UI has the latest persisted state
-                        if st.session_state.active_session_id:
-                            load_messages(st.session_state.active_session_id)
-                        load_sessions() # Refresh titles
-                    elif r.status_code == 401:
-                        _clear_user_state()
-                        st.session_state.user = None
-                        st.error("Session expired. Please log in again.")
+                        # Save & FINAL SYNC
+                        add_message("assistant", full_answer, request_id=request_id)
+                        time.sleep(0.1)
+                        load_messages(st.session_state.active_session_id)
+                        st.rerun()
                     else:
-                        st.error(f"Error: {r.status_code}")
-
+                        st.error(f"Backend Error: {r.status_code}")
             except Exception as e:
-                st.error(f"Connection error: {e}")
+                logger.error(f"Streaming Exception: {e}")
+                st.error(f"Connection lost or error: {e}")
             finally:
+                # ✅ CRITICAL: Always release processing lock
                 st.session_state.is_processing = False
-                # Final check for unsent user message cleanup
-                if st.session_state.messages and st.session_state.messages[-1].get("role") == "user":
-                    st.session_state.messages[-1]["sent_to_api"] = True
                 st.rerun()
+
 
 
 # ====================================================

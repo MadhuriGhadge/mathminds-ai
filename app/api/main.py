@@ -294,15 +294,15 @@ async def solve_problem(
 
     async def event_generator():
         try:
-            async for chunk in orchestrator.process_problem(
-                text=solve_req.effective_text, 
+            async for event in orchestrator.solve_problem_stream(
+                query=solve_req.effective_text, 
                 image=solve_req.image, 
-                request_id=final_request_id,
-                model_preference=solve_req.model_preference,
+                user_id=current_user["uid"], 
                 session_id=solve_req.session_id,
-                user_id=current_user.get("uid")
+                request_id=final_request_id
             ):
-                yield json.dumps(chunk) + "\n"
+                # ✅ STRICT SSE FORMAT
+                yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:
             logger.error(f"Streaming error: {e}")
             yield json.dumps({"type": "error", "content": "Internal processing error"}) + "\n"
@@ -313,7 +313,15 @@ async def solve_problem(
                 except Exception:
                     pass
 
-    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        event_generator(), 
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no" # Prevent Nginx buffering
+        }
+    )
 
 # --- Chat History Endpoints ---
 

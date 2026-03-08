@@ -43,9 +43,9 @@ class Orchestrator:
             logger.critical(f"Failed to initialize Orchestrator: {e}")
             raise
 
-    async def process_problem(
+    async def solve_problem_stream(
         self,
-        text: Optional[str] = None,
+        query: Optional[str] = None,
         image: Optional[str] = None,
         request_id: Optional[str] = None,
         model_preference: str = "fast",
@@ -71,7 +71,7 @@ class Orchestrator:
 
         try:
             # ── 1. Input processing ───────────────────────────────────────────
-            processed = self.input_processor.process_compound(text_input=text, image_input=image)
+            processed = self.input_processor.process_compound(text_input=query, image_input=image)
             if not processed.is_valid:
                 yield {"type": "error", "content": processed.error_message}
                 return
@@ -79,12 +79,16 @@ class Orchestrator:
             query = processed.cleaned_content
             image_data = processed.metadata.get("image_data")
 
-            # Background: Persist user message
+            # 1.5. Persist user message (Safety Check: Don't duplicate)
             if user_id and session_id:
-                asyncio.create_task(self._persist_message(
-                    user_id=user_id, session_id=session_id, role="user", 
-                    content=text or "Uploaded an image", image_data=image_data
-                ))
+                # Check if this exact request already exists in DB to prevent duplicates
+                history = self.db_manager.get_chat_history(user_id, session_id) or []
+                if not any(m.get("request_id") == request_id for m in history):
+                    await self._persist_message(
+                        user_id=user_id, session_id=session_id, role="user", 
+                        content=query or "Uploaded an image", image_data=image_data,
+                        request_id=request_id
+                    )
 
             # ── 2. Cache lookup ───────────────────────────────────────────────
             if settings.ENABLE_CACHE and not image_data:
@@ -93,12 +97,9 @@ class Orchestrator:
                 if cached:
                     yield {"type": "thought", "content": "Retrieving answer from memory..."}
                     yield {"type": "answer", "content": cached.get("answer")}
-                    # Background: Persist assistant response
+                    # Persist assistant response
                     if user_id and session_id:
-                        asyncio.create_task(self._persist_message(
-                            user_id=user_id, session_id=session_id, role="assistant",
-                            content=cached.get("answer"), metadata=cached.get("metadata")
-                        ))
+                        await self._persist_log(query, {"answer": cached.get("answer"), "metadata": cached.get("metadata")}, user_id, session_id, cache_key)
                     return
             else:
                 cache_key = None
@@ -116,7 +117,7 @@ class Orchestrator:
                         "metadata": {"model": "sympy", "tools_used": ["sympy"]}
                     })
                     
-                    self._fire_and_forget_log(query, result_schema, user_id, session_id, cache_key)
+                    await self._persist_log(query, result_schema, user_id, session_id, cache_key, request_id=request_id)
                     return
 
             # ── 4. Agentic Streaming Loop ─────────────────────────────────────
@@ -149,7 +150,8 @@ class Orchestrator:
             result_schema["metadata"]["latency_ms"] = int((time.time() - start_time) * 1000)
             
             if full_answer:
-                self._fire_and_forget_log(query, result_schema, user_id, session_id, cache_key)
+                # AWAIT the final log instead of fire-and-forget to prevent race conditions with UI reloads.
+                await self._persist_log(query, result_schema, user_id, session_id, cache_key, request_id=request_id)
 
         except Exception as e:
             logger.error(f"Orchestrator Error: {e}")
@@ -162,18 +164,15 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Failed to persist message: {e}")
 
-    def _fire_and_forget_log(self, query, schema, user_id, session_id, cache_key):
-        """Fire and forget persistence to avoid blocking the stream completion."""
-        asyncio.create_task(self._persist_log(query, schema, user_id, session_id, cache_key))
-
-    async def _persist_log(self, query, schema, user_id, session_id, cache_key):
+    async def _persist_log(self, query, schema, user_id, session_id, cache_key, request_id=None):
         """Internal awaitable helper."""
         # Map logic_trace to reasoning for frontend consistency
         reasoning = "\n".join(schema["metadata"].get("logic_trace", []))
         
         await self._persist_message(
             user_id=user_id, session_id=session_id, role="assistant",
-            content=schema["answer"], reasoning=reasoning, metadata=schema["metadata"]
+            content=schema["answer"], reasoning=reasoning, metadata=schema["metadata"],
+            request_id=request_id
         )
         if settings.ENABLE_CACHE and cache_key:
             self.cache_manager.set_cached_answer(cache_key, schema)

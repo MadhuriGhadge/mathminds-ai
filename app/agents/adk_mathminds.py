@@ -21,6 +21,7 @@ from app.tools.python_executor import PythonInterpreter
 from app.tools.advanced_ocr import AdvancedOCR
 from app.tools.vision_analyzer import VisionAnalyzer
 from app.core.math_normalizer import MathQueryNormalizer
+from app.services.automation import automation_service
 
 logger = logging.getLogger(__name__)
 
@@ -152,13 +153,29 @@ class MathMindsADKAgent:
                 formatted += f"Problem: {item.get('problem_text')}\nSolution: {item.get('solution_text')}\n---\n"
             return formatted
 
+        async def trigger_automation(event_name: str, payload_json: str) -> str:
+            """
+            Trigger an external automation workflow (n8n). 
+            Use this for sending alerts, emails, Discord messages, or logging data.
+            Args:
+                event_name: Description of the event (e.g., 'complex_problem_solved').
+                payload_json: A JSON string containing the data to send.
+            """
+            try:
+                payload = json.loads(payload_json)
+                result = await automation_service.trigger(event_name, payload)
+                return f"Automation triggered: {result.get('status')}"
+            except Exception as e:
+                return f"Automation failed: {str(e)}"
+
         # ── Agent & Runner ────────────────────────────────────────────────────
         self.agent = Agent(
             name="math_minds_core",
             model=model_name,
             tools=[
                 web_search, math_solver, execute_python, 
-                find_similar_problems, image_interpreter, statistical_vision
+                find_similar_problems, image_interpreter, statistical_vision,
+                trigger_automation
             ],
             instruction=(
                 "You are MathMinds AI, a precise mathematical analytical assistant. "
@@ -175,7 +192,8 @@ class MathMindsADKAgent:
                 "In Python, you can use specialized libraries like `numpy`, `scipy`, or `sympy` for numerical and symbolic solutions."
                 "\n3. INTERPRET LATEX: Tool outputs (especially from SymPy) are often in raw LaTeX. "
                 "NEVER just display the raw LaTeX to the user. Always explain the steps in clear English. "
-                "Wrap LaTeX in `$ ... $` for inline or `$$ ... $$` for blocks so the UI renders it properly."
+                "Wrap LaTeX in `$ ... $` for inline or `$$ ... $$` for blocks so the UI renders it properly. "
+                "Example: Use '$x^2$' instead of 'x^2'."
                 "\n\nCRITICAL: Always explain your reasoning before and after using tools. If a tool fails, explain WHY and try a different approach."
             )
         )
@@ -245,6 +263,8 @@ class MathMindsADKAgent:
                     logger.error(f"Image decode failed: {e}")
 
             # ── 4. Run agent (Streaming) ──────────────────────────────────────────
+            yielded_text_len = 0
+            
             async for event in self.runner.run_async(
                 user_id=user_id,
                 session_id=session_id,
@@ -252,36 +272,41 @@ class MathMindsADKAgent:
                 run_config=RunConfig(streaming_mode=StreamingMode.SSE)
             ):
                 # ── Determine Event Type ──
-                # is_final_response() is usually True for the final user-facing text
                 try:
                     is_final = event.is_final_response()
                 except Exception:
                     is_final = False
                 
-                # ── Capture Content (Text) ──
+                # ── Capture Content (Text Delta) ──
                 if hasattr(event, "content") and event.content and event.content.parts:
-                    for part in event.content.parts:
-                        if hasattr(part, "text") and part.text:
-                            # Stream ALL text to the main answer window
-                            # This fixes the "empty answer until refresh" issue.
-                            yield {"type": "answer", "content": part.text}
-                            
-                            # Log terminal responses separately if needed for logic
-                            if is_final:
-                                logger.debug(f"Final response chunk received: {part.text[:50]}...")
+                    # ✅ Safer handling: Ensure we only join STRINGS (handle None indices from tool parts)
+                    full_turn_text = "".join((getattr(part, "text", "") or "") for part in event.content.parts)
+                    
+                    # Handle buffer reset (happens after tool calls)
+                    if len(full_turn_text) < yielded_text_len:
+                        yielded_text_len = 0
+                    
+                    # Stream delta
+                    if len(full_turn_text) > yielded_text_len:
+                        delta = full_turn_text[yielded_text_len:]
+                        yielded_text_len = len(full_turn_text)
+                        yield {"type": "answer", "content": delta}
+                        
+                        if is_final:
+                            logger.debug(f"Final response chunk received: {delta[:50]}...")
                 
                 # ── Capture Tool Usage (Reasoning) ──
                 for fc in event.get_function_calls():
                     yield {
-                        "type": "action", 
-                        "content": f"Using tool: {fc.name}"
+                        "type": "thought",  # Changed from action to thought for UI consistency
+                        "content": f"⚙️ {fc.name}"
                     }
 
                 # ── Capture Tool Response ──
                 for fr in event.get_function_responses():
                      yield {
-                        "type": "observation", 
-                        "content": f"Obtained result from {fr.name}"
+                        "type": "thought", # Changed from observation to thought for UI consistency
+                        "content": f"👁️ Result from {fr.name}"
                     }
 
         except Exception as e:
