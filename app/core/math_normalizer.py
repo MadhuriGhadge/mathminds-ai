@@ -105,27 +105,46 @@ class MathQueryNormalizer:
              )
 
         # Arithmetic / Simplification
-        # If it looks like math chars only
-        if self._is_arithmetic(clean_text):
+        # If it contains numbers and operators, or starts with "calculate", "what is"
+        if self._is_arithmetic(clean_text) or any(clean_text.startswith(sw) for sw in ["calculate", "what is", "evaluate"]):
+             expr = self._clean_expression(clean_text)
              return MathIntent(
                  intent="arithmetic",
-                 expression=clean_text,
+                 expression=expr,
                  original_query=text
              )
 
         return None
 
     def _clean_expression(self, text: str) -> str:
-        """Removes common stop words and artifacts."""
+        """
+        Removes natural language words from an expression, leaving only
+        the mathematical notation SymPy can safely parse.
+
+        ROOT CAUSE FIX: the previous version only stripped stop words from
+        the START of the string. So "what is the value of 5*9" became
+        "the value of 5*9" — SymPy then treated t, h, e, v, a, l, u, e, o, f
+        as separate symbols and multiplied them: 45·a·e²·f·h·l·o·t·u·v.
+        That's the "45aeflouv" garble seen on the UI.
+
+        Fix: strip ALL known English prose words, not just from the start.
+        """
+        import re
         text = text.strip()
-        
-        # Remove "what is" if it somehow got in
-        for stop in self.stop_words:
-             # Replace start of string
-             if text.startswith(stop):
-                 text = text[len(stop):].strip()
-        
-        return text.strip()
+
+        # Full list of prose words to remove wherever they appear
+        prose_words = [
+            "what is", "what are", "the value of", "the result of",
+            "please", "calculate", "compute", "evaluate", "find",
+            "solve", "simplify", "determine", "the", "of", "for",
+            "result", "value", "answer",
+        ]
+        for phrase in sorted(prose_words, key=len, reverse=True):  # longest first
+            text = re.sub(rf'\b{re.escape(phrase)}\b', ' ', text, flags=re.IGNORECASE)
+
+        # Collapse multiple spaces
+        text = re.sub(r' +', ' ', text).strip()
+        return text
 
     def _is_arithmetic(self, text: str) -> bool:
         """

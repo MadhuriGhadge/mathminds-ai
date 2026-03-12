@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     ENABLE_LOCAL_MODELS: bool = True
     ENABLE_CACHE: bool = True
     ENABLE_AUTH: bool = True
-    MAX_LLM_CALLS_PER_DAY: int = 18 # Default limit per user per day
+    MAX_LLM_CALLS_PER_DAY: int = 100 # Default limit per user per day
 
     # Integrations
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None

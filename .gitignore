@@ -94,3 +94,25 @@ all_code.txt
 *.tmp
 *.out
 *.generated.*
+
+# Scratch and Debug Scripts
+debug_*.py
+test_*.py
+verify_*.py
+inspect_*.py
+locate_*.py
+check_*.py
+db_diag.py
+reproduce_crash.py
+find_embedding_models.py
+query
+all_code.txt
+frontend_trace.log
+
+# Sensitive Files
+github-recovery-codes.txt
+*-firebase-adminsdk-*.json
+service-account.json
+.env
+.env.*
+!.env.example
