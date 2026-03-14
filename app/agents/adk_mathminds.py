@@ -48,7 +48,6 @@ from app.tools.python_executor import PythonInterpreter
 from app.tools.advanced_ocr import AdvancedOCR
 from app.tools.vision_analyzer import VisionAnalyzer
 from app.core.math_normalizer import MathQueryNormalizer
-from app.services.automation import automation_service
 
 logger = logging.getLogger(__name__)
 
@@ -172,15 +171,6 @@ class MathMindsADKAgent:
                 )
             return formatted
 
-        async def trigger_automation(event_name: str, payload_json: str) -> str:
-            """Trigger an external automation workflow."""
-            try:
-                payload = json.loads(payload_json)
-                result  = await automation_service.trigger(event_name, payload)
-                return f"Automation triggered: {result.get('status')}"
-            except Exception as e:
-                return f"Automation failed: {e}"
-
         # ── Tool registry ──────────────────────────────────────────────────
         self.tools = {
             "web_search":           web_search,
@@ -188,7 +178,6 @@ class MathMindsADKAgent:
             "find_similar_problems":find_similar_problems,
             "image_interpreter":    image_interpreter,
             "statistical_vision":   statistical_vision,
-            "trigger_automation":   trigger_automation,
         }
 
         # ── Pre-build both agent variants and their runners ────────────────
@@ -206,7 +195,6 @@ class MathMindsADKAgent:
             self.tools["web_search"],
             self.tools["execute_python"],
             self.tools["find_similar_problems"],
-            self.tools["trigger_automation"],
         ]
         if has_image:
             active_tools.append(self.tools["image_interpreter"])

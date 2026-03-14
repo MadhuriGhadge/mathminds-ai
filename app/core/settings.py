@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     SUPABASE_URL: Optional[str] = None
     SUPABASE_KEY: Optional[str] = None
     WOLFRAM_APP_ID: Optional[str] = None
-    N8N_WEBHOOK_URL: Optional[str] = None
 
     # Security
     JWT_SECRET_KEY: str = "super_secret_key_change_me"
