@@ -18,9 +18,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Ensure start script is executable
+RUN chmod +x start.sh
+
 RUN useradd -m appuser && chown -R appuser /app
 USER appuser
 
-EXPOSE 8080
+EXPOSE 7860
 
-CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --timeout 0 app.api.main:app
+CMD ["./start.sh"]
