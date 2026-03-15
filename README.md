@@ -1,42 +1,214 @@
-# MathMinds AI
 
-**MathMinds AI** is an intelligent analytical web application that leverages cutting-edge AI to help users solve and understand complex mathematical problems. It combines OCR for handwritten math, web scraping for word-problem context, and image analysis for probability/statistics questions — all accessible through an interactive Python-based interface.
 
-## Final objective
-The final objective is to build **"MathMinds AI,"** an intelligent analytical web application that leverages cutting-edge AI to help users solve and understand complex mathematical problems. This application will be able to interpret handwritten equations from images, scrape data from the web to solve word problems, and even analyze images to answer questions about probability and statistics, all through an interactive Python-based interface.
+## Project Objective
 
-## Key features (planned / in progress)
-- **Handwritten equation recognition**  
-  - Upload an image of handwritten math; the system recognizes symbols and converts them to executable math expressions (OCR ➜ parser ➜ solver).
-- **Word-problem understanding with web augmentation**  
-  - Scrape relevant web sources or reference material when the problem requires external data or context, then integrate findings into the solution pipeline.
-- **Image-based probability & statistics analysis**  
-  - Analyze charts, tables, or images and answer related probability/statistics questions.
-- **Interactive Python interface**  
-  - An interface (FastAPI backend + Streamlit/Gradio frontend) that lets users run examples, inspect steps, and explore the reasoning.
-- **Explainable solutions**  
-  - Provide step-by-step derivations and visualizations (where applicable) so users can learn the process, not just the final answer.
-- **Embeddings & semantic search**  
-  - Use vector embeddings for retrieval of relevant examples, formulas, or help docs to assist in solving complex problems.
-- **Persistence & state**  
-  - Store user sessions, problem states, solution logs and allow users to revisit and refine earlier problems.
+The goal of MathMinds AI is to build a system that can:
+- Interpret handwritten equations from images
+- Understand natural language word problems
+- Analyze charts or probability/statistics images
+- Retrieve helpful information using semantic search
+- Produce explainable step-by-step solutions
 
-## Architecture
-- **Frontend**: Streamlit interactive web UI.
-- **Backend**: FastAPI serving endpoints for OCR, solver, web-scraping, image analysis, and retrieval.
-- **DB / Storage**: MongoDB for session/state and metadata; vector DB (or embeddings layer) for semantic retrieval.
-- **AI components**:
-  - OCR + Math parser (e.g., TrOCR/ LaTeX converter)
-  - Language model + prompt pipelines for understanding word problems and code generation
-  - Small numerical solver module (sympy) for symbolic and numeric solutions
-- **Dev tooling**: Git, Docker, CI for tests and deploy, unit/integration tests for solver correctness.
+All of this is exposed through an interactive web interface powered by Python.
 
-## Tech stack
-- Python 3.10+  
-- FastAPI (backend)  
-- Streamlit (frontend prototypes)  
-- MongoDB + PyMongo (state & logs)  
-- SymPy (for math solving)  
-- OCR tooling (TrOCR)  
-- LLM providers or local models (for natural language understanding and code generation)  
-- Vector embeddings +Supabase (for retrieval)
+## Demo
+
+**HuggingFace Space**: [https://huggingface.co/spaces/ghadgemadhuri92/mathstutor](https://huggingface.co/spaces/ghadgemadhuri92/mathstutor)
+
+## Key Features
+
+### 1. Handwritten Equation Recognition
+Users can upload an image of handwritten mathematics.
+
+**Pipeline**: Image → OCR → Symbol Parsing → Math Expression → Solver
+
+**Technologies involved**:
+- TrOCR / OCR pipeline
+- Expression parser
+- SymPy symbolic solver
+
+### 2. Word Problem Understanding
+MathMinds AI can analyze natural language math questions such as:
+"A train travels 60 km/h for 2.5 hours. How far does it go?"
+
+**The system**:
+- Interprets the problem using LLMs
+- Extracts numerical relationships
+- Generates a mathematical representation
+- Solves using SymPy
+
+
+### 3. Image-Based Probability & Statistics Analysis
+The system can analyze:
+- charts
+- tables
+- probability diagrams
+- statistics graphs
+
+Using image analysis capabilities of gemini, it extracts relevant information and answers questions related to the image.
+
+### 4. Explainable Solutions
+MathMinds AI emphasizes explainability.
+Instead of only returning a result, the system generates:
+- step-by-step derivations
+- symbolic transformations
+- intermediate reasoning
+
+### 5. Semantic Retrieval with Embeddings
+The system uses vector embeddings to retrieve relevant:
+- formulas
+- solved examples
+- reference explanations
+
+This improves the accuracy of complex problems.
+
+## System Architecture
+
+```text
+                User
+                 │
+                 ▼
+           Streamlit UI
+                 │
+                 ▼
+              FastAPI
+                 │
+   ┌─────────────┼─────────────┐
+   ▼             ▼             ▼
+ OCR Engine   LLM Pipeline   Image Analysis
+   │             │             │
+   ▼             ▼             ▼
+ Expression   Problem        Feature
+ Parsing      Understanding  Extraction
+   │             │             │
+   └─────────────▼─────────────┘
+                Solver
+               (SymPy)
+                 │
+                 ▼
+             Response
+```
+
+## Tech Stack
+
+**Backend**
+- Python 3.10+
+- FastAPI
+
+**Frontend**
+- Streamlit
+
+**AI / ML**
+- SymPy (symbolic math solving)
+- TrOCR (handwritten text recognition)
+- YOLO (image object detection)
+- LLM APIs for reasoning and parsing
+
+**Data & Storage**
+- MongoDB (session state and logs)
+- Vector embeddings layer
+- Supabase (vector storage / retrieval)
+
+**Dev Tools**
+- Git
+- Docker
+
+## Project Structure
+Example simplified structure:
+```text
+MathMinds-AI
+│
+├── backend
+│   ├── api
+│   │   ├── routes
+│   │   └── services
+│   │
+│   ├── ocr
+│   │   ├── image_preprocessing.py
+│   │   └── trocr_pipeline.py
+│   │
+│   ├── solver
+│   │   ├── sympy_solver.py
+│   │   └── expression_parser.py
+│   │
+│   ├── image_analysis
+│   │   └── yolo_detection.py
+│   │
+│   └── retrieval
+│       └── embeddings_search.py
+│
+├── frontend
+│   └── streamlit_app.py
+│
+├── database
+│   └── mongo_client.py
+│
+├── experiments
+│   └── research notebooks
+│
+├── requirements.txt
+└── README.md
+```
+
+## Branch Information
+This repository currently contains multiple development branches.
+
+- **main**: Stable project documentation and baseline implementation.
+- **experiment-adk**: Active development branch where experimental pipelines and new features are being tested.
+
+
+## Limitations & Known Issues
+MathMinds AI is still an experimental project, several limitations currently exist.
+
+### 1. API Quota Exhaustion
+Some components depend on external APIs (LLM providers).
+Possible issues:
+- API rate limits
+- quota exhaustion
+- slow response times
+
+Mitigation strategies include caching and local models in future versions.
+
+### 2. OCR Accuracy for Handwritten Math
+Handwritten mathematical notation is extremely difficult to recognize due to:
+- varied writing styles
+- symbol overlap
+- ambiguous characters
+
+Current OCR pipelines may misinterpret:
+- fractions
+- integrals
+- superscripts/subscripts
+
+Improving symbol segmentation is an ongoing area of work.
+
+### 3. YOLO Model Instability
+The YOLO-based image analysis module for charts and probability diagrams still faces challenges:
+- false detections
+- poor performance on complex diagrams
+- inconsistent bounding boxes
+
+Model retraining and dataset improvements are planned.
+
+### 4. High Sensitivity to Input Quality
+The system performs best when:
+- images are clear
+- handwriting is legible
+- problem statements are structured
+
+Low quality images or ambiguous wording may produce incorrect results.
+
+### 5. Incomplete Reasoning Pipelines
+Some reasoning tasks still depend heavily on LLM prompting.
+This means:
+- occasional hallucinations
+- inconsistent solution steps
+- failure on very complex problems
+
+Planned improvements include:
+- Better handwritten math recognition
+- Custom-trained symbol segmentation model
+- Improved YOLO training dataset
+- Local LLM integration
+- Advanced symbolic reasoning pipelines
+- Interactive solution visualization
