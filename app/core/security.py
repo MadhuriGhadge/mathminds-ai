@@ -7,14 +7,22 @@ from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
+import json
+
 # Initialize Firebase Admin
 _firebase_initialized = False
 try:
-    if settings.FIREBASE_CREDENTIALS_PATH:
+    if settings.FIREBASE_CREDENTIALS_JSON:
+        cred_dict = json.loads(settings.FIREBASE_CREDENTIALS_JSON)
+        cred = firebase_credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred)
+        _firebase_initialized = True
+        logger.info("Firebase Admin initialized successfully from JSON string.")
+    elif settings.FIREBASE_CREDENTIALS_PATH:
         cred = firebase_credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
         firebase_admin.initialize_app(cred)
         _firebase_initialized = True
-        logger.info("Firebase Admin initialized successfully.")
+        logger.info("Firebase Admin initialized successfully from file path.")
     else:
         # Try default/env initialization
         firebase_admin.initialize_app()

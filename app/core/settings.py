@@ -41,6 +41,7 @@ class Settings(BaseSettings):
 
     # Integrations
     FIREBASE_CREDENTIALS_PATH: Optional[str] = None
+    FIREBASE_CREDENTIALS_JSON: Optional[str] = None
     SUPABASE_URL: Optional[str] = None
     SUPABASE_KEY: Optional[str] = None
     WOLFRAM_APP_ID: Optional[str] = None
@@ -64,8 +65,8 @@ class Settings(BaseSettings):
                 raise ValueError("MONGO_URI must be set in production environment")
             if not self.REDIS_URL:
                 raise ValueError("REDIS_URL must be set in production environment")
-            if not self.FIREBASE_CREDENTIALS_PATH:
-                raise ValueError("FIREBASE_CREDENTIALS_PATH must be set in production environment")
+            if not self.FIREBASE_CREDENTIALS_PATH and not self.FIREBASE_CREDENTIALS_JSON:
+                raise ValueError("Either FIREBASE_CREDENTIALS_PATH or FIREBASE_CREDENTIALS_JSON must be set in production environment")
             if not self.VERTEX_SEARCH_DATA_STORE_ID:
                 # We allow it to be empty if the user wants to fallback to scraping, 
                 # but for 100% production readiness we should warn.
