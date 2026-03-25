@@ -58,3 +58,28 @@ def sign_up_with_email(email, password):
             return None, None, None, error_msg
     except Exception as e:
         return None, None, None, str(e)
+
+def send_password_reset_email(email):
+    """
+    Sends a password reset email using Firebase Auth REST API.
+    """
+    if not FIREBASE_WEB_API_KEY:
+        return False, "FIREBASE_WEB_API_KEY is not set in .env"
+
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={FIREBASE_WEB_API_KEY}"
+    payload = {
+        "requestType": "PASSWORD_RESET",
+        "email": email
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        data = response.json()
+        
+        if response.status_code == 200:
+            return True, None
+        else:
+            error_msg = data.get("error", {}).get("message", "Unknown error")
+            return False, error_msg
+    except Exception as e:
+        return False, str(e)

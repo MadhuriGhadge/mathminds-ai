@@ -44,7 +44,7 @@ import uuid
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 from dotenv import load_dotenv
-from firebase_utils import sign_in_with_email, sign_up_with_email
+from firebase_utils import sign_in_with_email, sign_up_with_email, send_password_reset_email
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -374,7 +374,7 @@ def _render_login():
         </div>
         """, unsafe_allow_html=True)
 
-        tab_in, tab_up = st.tabs(["Login", "Sign Up"])
+        tab_in, tab_up, tab_reset = st.tabs(["Login", "Sign Up", "Reset Password"])
 
         with tab_in:
             with st.form("login_form"):
@@ -411,6 +411,20 @@ def _render_login():
                                 st.error(f"Sign up failed: {error}")
                     else:
                         st.error("Please fill all fields.")
+
+        with tab_reset:
+            with st.form("reset_form"):
+                st.markdown("Enter your email address to receive a secure password reset link.")
+                reset_email = st.text_input("Email", placeholder="student@university.edu", key="reset_email_input")
+                if st.form_submit_button("Send Reset Link", use_container_width=True, type="primary"):
+                    if reset_email:
+                        success, error = send_password_reset_email(reset_email)
+                        if success:
+                            st.success("✅ Password reset link sent! Please check your email inbox.")
+                        else:
+                            st.error(f"Failed to send reset link: {error}")
+                    else:
+                        st.error("Please enter your email.")
 
         st.markdown(
             "<p style='text-align:center;font-size:0.8rem;color:#6b7280;'>Powered by Gemini & SymPy</p>",
