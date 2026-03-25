@@ -320,6 +320,48 @@ def _render_message(msg: dict):
             else:
                 st.markdown(str(content))
 
+            # --- EXPORT BUTTONS ---
+            if role == "assistant" and status != "error" and content:
+                try:
+                    from export_utils import generate_latex, compile_pdf
+                    
+                    msg_id = msg.get("request_id") or str(int(msg.get("timestamp", 0)))
+                    pdf_state_key = f"pdf_bytes_{msg_id}"
+                    
+                    with st.expander("📥 Export Solution (LaTeX / PDF)"):
+                        tex_str = generate_latex(str(content))
+                        c1, c2 = st.columns(2)
+                        
+                        with c1:
+                            st.download_button(
+                                label="📄 Download .tex Source",
+                                data=tex_str,
+                                file_name=f"mathminds_{msg_id[:8]}.tex",
+                                mime="text/plain",
+                                key=f"dl_tex_{msg_id}"
+                            )
+                        
+                        with c2:
+                            if pdf_state_key not in st.session_state:
+                                if st.button("🛠️ Generate PDF", key=f"btn_compile_{msg_id}"):
+                                    with st.spinner("Compiling PDF via remote TeX Live..."):
+                                        pdf_data = compile_pdf(tex_str)
+                                        if pdf_data:
+                                            st.session_state[pdf_state_key] = pdf_data
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Failed to compile PDF from external API.")
+                            else:
+                                st.download_button(
+                                    label="✅ Click to Save PDF",
+                                    data=st.session_state[pdf_state_key],
+                                    file_name=f"mathminds_{msg_id[:8]}.pdf",
+                                    mime="application/pdf",
+                                    key=f"dl_pdf_{msg_id}"
+                                )
+                except Exception as e:
+                    logger.error(f"Render export error: {e}")
+
 
 def _render_login():
     _, c, _ = st.columns([1, 2, 1])

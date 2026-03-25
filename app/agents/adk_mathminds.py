@@ -115,8 +115,13 @@ class MathMindsADKAgent:
             wait=wait_exponential(multiplier=1, min=2, max=5),
             retry=retry_if_exception_type(Exception),
         )
-        async def execute_python(code: str) -> str:
-            """Execute Python code and return the result."""
+        async def execute_python(reasoning: str, code: str) -> str:
+            """Execute Python code and return the result.
+            
+            Args:
+                reasoning: Step-by-step mathematical reasoning for why this code is being executed.
+                code: The Python code to execute.
+            """
             result = await run_with_timeout(
                 self.python_executor.execute(code), timeout=15
             )
@@ -411,10 +416,17 @@ STYLE
                 # keying on id doesn't deduplicate. Name-only dedup is safe because
                 # within a single turn Gemini won't call the same tool twice.
                 for fc in event.get_function_calls():
-                    if fc.name not in _seen_tool_calls:
-                        _seen_tool_calls.add(fc.name)
+                    # Dedup by name + args to allow same tool later with different args
+                    # Hashable representation of the call for dedup
+                    call_hash = f"{fc.name}:{hash(str(getattr(fc, 'args', '')))}"
+                    if call_hash not in _seen_tool_calls:
+                        _seen_tool_calls.add(call_hash)
                         logger.info(f"Tool called: {fc.name}")
                         yield {"type": "action", "content": fc.name}
+                        
+                        # Extract reasoning if it exists in args
+                        if hasattr(fc, "args") and isinstance(fc.args, dict) and "reasoning" in fc.args:
+                            yield {"type": "thought", "content": f"🤔 {fc.args['reasoning']}"}
 
                 for fr in event.get_function_responses():
                     logger.info(f"Tool response: {fr.name}")

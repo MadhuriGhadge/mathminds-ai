@@ -212,8 +212,35 @@ class Orchestrator:
                         # sympy_solver.solve() returns a plain str, not a dict
                         answer = sympy_result
                         yield {"type": "thought", "content": f"⚡ Solving symbolically ({math_intent.intent})..."}
-                        yield {"type": "answer",  "content": _normalize_math(answer)}
-                        result_schema["answer"]          = answer
+                        
+                        # Use LLM to briefly explain the SymPy answer
+                        yield {"type": "thought", "content": "🤖 Generating step-by-step reasoning..."}
+                        
+                        reasoning_prompt = f"The user asked: '{query}'. The exact symbolic answer is: '{answer}'. Briefly explain the step-by-step mathematical reasoning to reach this exact answer. Format with markdown and LaTeX. Use double line breaks between steps."
+                        
+                        full_reasoning = ""
+                        try:
+                            # Stream the explanation
+                            stream = await self.adk_agent.genai_client.aio.models.generate_content_stream(
+                                model="gemini-2.5-flash",
+                                contents=reasoning_prompt
+                            )
+                            async for chunk in stream:
+                                if chunk.text:
+                                    full_reasoning += chunk.text
+                                    yield {"type": "answer", "content": _normalize_math(chunk.text)}
+                        except Exception as e:
+                            logger.error(f"Failed to generate SymPy reasoning: {e}")
+                            
+                        # Format the final combined answer
+                        final_answer = f"{full_reasoning}\n\n---\n**Final Answer:**\n{answer}" if full_reasoning else answer
+                        
+                        if not full_reasoning:
+                            yield {"type": "answer",  "content": _normalize_math(final_answer)}
+                        else:
+                            yield {"type": "answer",  "content": _normalize_math(f"\n\n---\n**Final Answer:**\n{answer}")}
+                            
+                        result_schema["answer"]          = final_answer
                         result_schema["metadata"]["source"] = "sympy_preflight"
                         result_schema["metadata"]["intent"] = math_intent.intent
                         if user_id and session_id:
