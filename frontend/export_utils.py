@@ -61,11 +61,23 @@ def generate_latex(markdown_text: str) -> str:
 def compile_pdf(tex_content: str) -> bytes:
     """Compiles a complete LaTeX string to a PDF using public latexonline.cc API."""
     try:
-        r = requests.post(
-            "https://latexonline.cc/compile",
-            data={"text": tex_content},
-            timeout=30
-        )
+        import urllib.parse
+        
+        encoded_tex = urllib.parse.quote(tex_content)
+        url = f"https://latexonline.cc/compile?text={encoded_tex}"
+        
+        # If the encoded URL is massive, the server might reject the GET request.
+        # Fallback to the POST /data endpoint with a multipart file upload.
+        if len(url) > 8000:
+            logger.info("URL too long, falling back to POST /data multipart")
+            r = requests.post(
+                "https://latexonline.cc/data?command=pdflatex",
+                files={"file": ("document.tex", tex_content)},
+                timeout=45
+            )
+        else:
+            r = requests.get(url, timeout=45)
+            
         if r.status_code == 200:
             return r.content
         else:
