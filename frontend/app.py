@@ -118,6 +118,7 @@ st.markdown("""
 _DEFAULTS = {
     "user":                None,
     "current_view":        "Chat",
+    "current_mode":        "solve",
     "chat_sessions":       [],
     "active_session_id":   None,
     "messages":            [],
@@ -188,10 +189,10 @@ def api_health() -> dict:
         return {"ok": False}
 
 
-def api_solve(text: str, image, session_id: str, request_id: str) -> dict:
+def api_solve(text: str, image, session_id: str, request_id: str, mode: str = "solve") -> dict:
     try:
         r = requests.post(
-            f"{BACKEND_URL}/solve",
+            f"{BACKEND_URL}/{mode}",
             json={"text": text, "image": image, "session_id": session_id, "request_id": request_id},
             headers=_get_headers(),
             timeout=360,
@@ -542,6 +543,14 @@ def _render_sidebar():
             st.session_state.current_view = view
             st.rerun()
 
+        st.divider()
+        st.markdown("#### Mode")
+        mode_options = {"solve": "⚡ Solver", "analyze": "🔍 Analyzer", "tutor": "🎓 Tutor"}
+        selected = st.selectbox("Select Agent", options=list(mode_options.keys()), format_func=lambda x: mode_options[x], label_visibility="collapsed")
+        if selected != st.session_state.current_mode:
+            st.session_state.current_mode = selected
+            st.rerun()
+
         # Health
         st.divider()
         health = api_health()
@@ -659,6 +668,7 @@ def chat_interface():
                 image      = last.get("image_data"),
                 session_id = active_sid,
                 request_id = request_id,
+                mode       = st.session_state.current_mode,
             )
 
         # Auth expired — logout

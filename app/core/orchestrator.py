@@ -90,7 +90,12 @@ class Orchestrator:
             self.cache_manager   = cache_manager or CacheManager()
             self.db_manager      = db_manager or DatabaseManager()
             self.redis_client    = redis_client
-            self.adk_agent       = MathMindsADKAgent(redis_client=self.redis_client)
+            self.agents          = {
+                "solver": MathMindsADKAgent(agent_mode="solver", redis_client=self.redis_client),
+                "analyzer": MathMindsADKAgent(agent_mode="analyzer", redis_client=self.redis_client),
+                "tutor": MathMindsADKAgent(agent_mode="tutor", redis_client=self.redis_client),
+            }
+            self.adk_agent       = self.agents["solver"]
             self.sympy_solver    = SymPySolver()
 
             # Semantic cache — use injected instance from deps.py if provided,
@@ -114,6 +119,7 @@ class Orchestrator:
         model_preference: str = "fast",
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        mode: str = "solver",
     ) -> AsyncGenerator[Dict[str, Any], None]:
 
         start_time = time.time()
@@ -169,7 +175,7 @@ class Orchestrator:
             cached_answer  = None
             cache_source   = None
 
-            if settings.ENABLE_CACHE and not image_data:
+            if settings.ENABLE_CACHE and not image_data and mode == "solver":
                 cache_key = self._make_cache_key(query)
 
                 # Layer 1: exact hash
@@ -204,7 +210,7 @@ class Orchestrator:
             # Cost: 0 LLM calls. Handles derivatives, integrals,
             # equations, limits, arithmetic in milliseconds.
             # If SymPy can't solve it → falls through to Gemini.
-            if not image_data:
+            if not image_data and mode == "solver":
                 math_intent = self.normalizer.normalize(query)
                 if math_intent:
                     sympy_result = self.sympy_solver.solve(math_intent)
@@ -261,9 +267,19 @@ class Orchestrator:
             # Result: "action" and "observation" were yielded but never logged to
             # logic_trace. Rewritten as explicit branches with no dead code.
             full_answer = ""
-            async for event in self.adk_agent.solve(
+            agent_to_use = self.agents.get(mode, self.adk_agent)
+            
+            chat_history = None
+            if user_id and session_id:
+                try:
+                    chat_history = self.db_manager.get_chat_history(user_id, session_id)
+                except Exception as e:
+                    logger.warning(f"Failed to fetch history for memory injection: {e}")
+
+            async for event in agent_to_use.solve(
                 problem=query, image_data=image_data,
                 session_id=session_id, user_id=user_id,
+                chat_history=chat_history,
             ):
                 ev_type = event.get("type", "")
                 content = event.get("content", "")
@@ -317,6 +333,7 @@ class Orchestrator:
         model_preference: str = "fast",
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        mode: str = "solver",
     ) -> Dict[str, Any]:
         """
         Non-streaming version of solve_problem.
@@ -335,6 +352,7 @@ class Orchestrator:
             model_preference=model_preference,
             session_id=session_id,
             user_id=user_id,
+            mode=mode,
         ):
             ev_type = event.get("type")
             content = event.get("content")

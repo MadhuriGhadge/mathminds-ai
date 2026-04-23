@@ -334,6 +334,85 @@ async def solve_problem(
 
 
 # ═════════════════════════════════════════════════════════════════════
+# ANALYZE ROUTE
+# ═════════════════════════════════════════════════════════════════════
+
+@app.post("/analyze")
+@limiter.limit("5/minute")
+async def analyze_problem(
+    request: Request,
+    solve_req: SolveRequest,
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+    current_user: dict = Depends(get_current_user),
+):
+    """Analyze user's work and grade it."""
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+
+    if not solve_req.image:
+        raise HTTPException(
+            status_code=400,
+            detail="An image of the user's work must be provided for analysis.",
+        )
+
+    if len(solve_req.image) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=413, detail="Image too large")
+
+    logger.info("Analyze request received", extra={"request_id": request_id, "user_id": current_user["uid"]})
+
+    try:
+        result = await orchestrator.solve_problem(
+            query=solve_req.effective_text,
+            image=solve_req.image,
+            user_id=current_user["uid"],
+            session_id=solve_req.session_id,
+            request_id=request_id,
+            mode="analyzer"
+        )
+        return JSONResponse(status_code=200, content=result)
+    except Exception as e:
+        logger.error(f"Analyze error: {e}")
+        raise HTTPException(status_code=500, detail="Internal processing error")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TUTOR ROUTE
+# ═════════════════════════════════════════════════════════════════════
+
+@app.post("/tutor")
+@limiter.limit("5/minute")
+async def tutor_problem(
+    request: Request,
+    solve_req: SolveRequest,
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+    current_user: dict = Depends(get_current_user),
+):
+    """Socratic tutoring session endpoint."""
+    request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+
+    if not solve_req.effective_text and not solve_req.image:
+        raise HTTPException(status_code=400, detail="Either text or image must be provided")
+
+    if solve_req.image and len(solve_req.image) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=413, detail="Image too large")
+
+    logger.info("Tutor request received", extra={"request_id": request_id, "user_id": current_user["uid"]})
+
+    try:
+        result = await orchestrator.solve_problem(
+            query=solve_req.effective_text,
+            image=solve_req.image,
+            user_id=current_user["uid"],
+            session_id=solve_req.session_id,
+            request_id=request_id,
+            mode="tutor"
+        )
+        return JSONResponse(status_code=200, content=result)
+    except Exception as e:
+        logger.error(f"Tutor error: {e}")
+        raise HTTPException(status_code=500, detail="Internal processing error")
+
+
+# ═════════════════════════════════════════════════════════════════════
 # CHAT ROUTES
 # ═════════════════════════════════════════════════════════════════════
 

@@ -48,6 +48,7 @@ from app.tools.python_executor import PythonInterpreter
 from app.tools.advanced_ocr import AdvancedOCR
 from app.tools.vision_analyzer import VisionAnalyzer
 from app.core.math_normalizer import MathQueryNormalizer
+from app.agents.prompts import SOLVER_PROMPT, ANALYZER_PROMPT, TUTOR_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +65,12 @@ _QUOTA_MESSAGE = (
 
 class MathMindsADKAgent:
 
-    def __init__(self, model_name: str = "gemini-2.5-flash", redis_client=None):
+    def __init__(self, model_name: str = "gemini-2.5-flash", agent_mode: str = "solver", redis_client=None):
 
         self.api_key      = settings.GOOGLE_API_KEY
         self.redis_client = redis_client
         self._model_name  = model_name
+        self._agent_mode  = agent_mode.lower()
 
         if not self.api_key:
             logger.warning("No Google API Key found.")
@@ -212,79 +214,9 @@ class MathMindsADKAgent:
             # google_search grounding is REMOVED here to avoid 400 Bad Request conflict.
             # grounding is now provided by the web_search sub-agent tool.
             generate_content_config=types.GenerateContentConfig(
-                temperature=0.1,
+                temperature=0.1 if self._agent_mode in ["solver", "analyzer"] else 0.4,
             ),
-            instruction="""
-You are MathMinds AI, a precise mathematical reasoning assistant.
-
-PRIMARY OBJECTIVE
-Solve the user's problem completely and clearly in a single response.
-
-CRITICAL RULES
-1. NEVER ask clarifying questions.
-2. If the query is ambiguous, make a reasonable assumption and proceed.
-3. If the topic is broad (e.g. "probability distribution functions"),
-   give a concise overview covering:
-   - key concepts
-   - main formulas
-   - one worked example.
-4. Always produce a complete, self-contained answer.
-
-TOOL USAGE POLICY
-Only call tools when necessary.
-
-execute_python
-Use for:
-- arithmetic
-- algebra
-- calculus
-- statistics
-- numerical evaluation
-- plotting
-Always prefer running code instead of performing complex calculations manually.
-
-find_similar_problems
-Use when the problem clearly matches a standard math pattern
-(e.g. quadratic equation, integration type, probability distribution).
-
-image_interpreter
-Use ONLY if the user provided an image AND the task involves
-handwritten equations or text extraction.
-
-statistical_vision
-Use ONLY if the user provided an image AND the task involves
-counting objects, detecting shapes, or visual quantitative analysis.
-
-IMPORTANT TOOL RULES
-- Do NOT call image tools if no image was provided.
-- Do NOT call web search tools for mathematical problems.
-- Do NOT call multiple tools unless absolutely necessary.
-
-RESPONSE STRUCTURE
-Always format answers in this structure:
-
-1. Approach
-Brief one-line description of the solution strategy.
-
-2. Solution Steps
-Clear step-by-step reasoning.
-IMPORTANT: Use double line breaks (empty lines) between EVERY step so the text is not cramped.
-
-3. Mathematical Expressions
-All math must be formatted using LaTeX:
-inline: $...$
-block: $$...$$
-Always put block equations ($$...$$) on their own lines, separated by empty lines from the surrounding text.
-
-4. Final Answer
-Clearly highlight the final result.
-
-STYLE
-- Use generous spacing (empty lines) between paragraphs! The UI requires heavy line breaks to look good.
-- Be concise but complete.
-- Avoid unnecessary verbosity.
-- Prefer mathematical clarity over long explanations.
-""",
+            instruction=ANALYZER_PROMPT if self._agent_mode == "analyzer" else (TUTOR_PROMPT if self._agent_mode == "tutor" else SOLVER_PROMPT),
         )
 
     def _build_runner(self, has_image: bool) -> Runner:
@@ -312,8 +244,9 @@ STYLE
         self,
         problem: str,
         image_data: Optional[str] = None,
-        session_id: str = "default_session",
-        user_id: str = "default_user",
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        chat_history: Optional[list] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
 
         token = current_image_ctx.set(image_data)
@@ -336,21 +269,16 @@ STYLE
                     return
                 # llm_guard already logs "LLM quota used" — no duplicate log here
 
-            # Ensure session exists
-            try:
-                existing = await self.session_service.get_session(
-                    app_name="mathminds",
-                    session_id=session_id,
-                    user_id=user_id,
-                )
-                if not existing:
-                    await self.session_service.create_session(
-                        app_name="mathminds",
-                        user_id=user_id,
-                        session_id=session_id,
-                    )
-            except Exception as e:
-                logger.warning(f"Session setup warning (non-fatal): {e}")
+            # We bypass the volatile InMemorySessionService and directly inject 
+            # MongoDB's persistent chat_history into the prompt for perfect memory.
+            if chat_history:
+                recent_history = chat_history[-10:]
+                history_text = "=== PAST CONVERSATION: ===\n"
+                for msg in recent_history:
+                    r = "User" if msg.get("role") == "user" else "Assistant"
+                    history_text += f"{r}:\n{msg.get('content', '')}\n\n"
+                history_text += "=== CURRENT REQUEST: ===\n"
+                problem = f"{history_text}{problem}"
 
             # Build message parts
             parts = [types.Part.from_text(text=str(problem) or "Analyze this image.")]
@@ -358,10 +286,30 @@ STYLE
             if image_data:
                 try:
                     img_bytes = base64.b64decode(image_data)
+                    
+                    # ── YOLO VISUAL PIPELINE ──
+                    if not hasattr(self, 'yolo_analyzer'):
+                        from app.tools.yolo_vision import YoloVisionAnalyzer
+                        self.yolo_analyzer = YoloVisionAnalyzer()
+                        
+                    logger.info("Running YOLO inference...")
+                    yolo_result = self.yolo_analyzer.process_image(img_bytes)
+                    
+                    if yolo_result.get("status") == "success" and yolo_result.get("annotated_base64"):
+                        # Log bounding box data to Logic Trace
+                        yield {"type": "observation", "content": f"YOLOv8 detected {yolo_result.get('object_count')} object regions."}
+                        
+                        # Embed the drawn bounding boxes immediately in the UI text stream
+                        b64 = yolo_result["annotated_base64"]
+                        yield {"type": "answer", "content": f"\n\n**YOLO Vision Framing:**\n\n![Visual](data:image/png;base64,{b64})\n\n---\n\n"}
+                        
+                        # Give Gemini the heavily-annotated image too
+                        img_bytes = base64.b64decode(b64)
+                        
                     mime_type = self._get_image_mime(img_bytes)
                     parts.append(types.Part.from_bytes(data=img_bytes, mime_type=mime_type))
                 except Exception as e:
-                    logger.error(f"Image decode failed: {e}")
+                    logger.error(f"Image decode or YOLO failed: {e}")
 
             # Pick the pre-built runner for this request type
             runner = self._runner_image if image_data else self._runner_text
@@ -381,7 +329,7 @@ STYLE
 
             async for event in runner.run_async(
                 user_id=user_id,
-                session_id=session_id,
+                # Omit session_id to disable ADK tracking and rely on injected history
                 new_message=types.Content(role="user", parts=parts),
                 run_config=RunConfig(streaming_mode=StreamingMode.SSE),
             ):

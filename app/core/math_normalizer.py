@@ -91,11 +91,7 @@ class MathQueryNormalizer:
                 
         # Equation Solving
         if "=" in clean_text:
-             # Basic heuristic: if it has = it's likely an equation
-             # Remove "solve", "find x" etc
-             expr = clean_text
-             for stop in ["solve", "find x", "calculate", "what is", "evaluate"]:
-                 expr = expr.replace(stop, "")
+             expr = self._clean_expression(clean_text)
              
              return MathIntent(
                  intent="equation",
@@ -137,7 +133,8 @@ class MathQueryNormalizer:
             "what is", "what are", "the value of", "the result of",
             "please", "calculate", "compute", "evaluate", "find",
             "solve", "simplify", "determine", "the", "of", "for",
-            "result", "value", "answer",
+            "result", "value", "answer", "how do i", "how to", "i", "can you",
+            "find x", "how do we", "we", "do", "how",
         ]
         for phrase in sorted(prose_words, key=len, reverse=True):  # longest first
             text = re.sub(rf'\b{re.escape(phrase)}\b', ' ', text, flags=re.IGNORECASE)
