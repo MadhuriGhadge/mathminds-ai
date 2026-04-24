@@ -283,6 +283,18 @@ class MathMindsADKAgent:
             # Build message parts
             parts = [types.Part.from_text(text=str(problem) or "Analyze this image.")]
 
+            # We must pass a session_id to ADK, but we want to ignore ADK's tracking 
+            # to prevent duplicate history (since we use MongoDB). 
+            # Solution: Create a disposable single-turn session!
+            import uuid
+            stateless_id = f"single_turn_{uuid.uuid4().hex}"
+            try:
+                await self.session_service.create_session(
+                    app_name="mathminds", user_id=user_id, session_id=stateless_id
+                )
+            except Exception:
+                pass
+
             if image_data:
                 try:
                     img_bytes = base64.b64decode(image_data)
@@ -329,7 +341,7 @@ class MathMindsADKAgent:
 
             async for event in runner.run_async(
                 user_id=user_id,
-                # Omit session_id to disable ADK tracking and rely on injected history
+                session_id=stateless_id,
                 new_message=types.Content(role="user", parts=parts),
                 run_config=RunConfig(streaming_mode=StreamingMode.SSE),
             ):
