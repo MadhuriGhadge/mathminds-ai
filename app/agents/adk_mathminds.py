@@ -200,7 +200,6 @@ class MathMindsADKAgent:
     def _build_agent(self, has_image: bool) -> Agent:
         active_tools = [
             self.tools["web_search"],
-            self.tools["execute_python"],
             self.tools["find_similar_problems"],
         ]
         if has_image:
