@@ -1,26 +1,6 @@
 """
 adk_mathminds.py — Google ADK-based MathMinds agent
 
-BUGS FIXED vs previous version
-───────────────────────────────
-BUG 1+2: self.session_service = InMemorySessionService() was placed AFTER
-         the return statement in _get_agent() → dead code, never executed.
-         solve() then crashed with AttributeError on self.session_service.
-         Fix: moved session_service init to __init__(), created once at startup.
-
-BUG 3:   yielded_text_len cursor logic caused duplicate/garbled answers.
-         ADK SSE sends cumulative text in intermediate events AND the complete
-         final answer in the is_final_response() event. Cursor slicing
-         without is_final guard yielded fragments + the full answer = duplicates.
-         Fix: yield ONLY from is_final_response() events.
-
-BUG 4:   Runner() was instantiated fresh inside every solve() call.
-         Fix: Runner created once in __init__() and reused.
-
-BUG 6:   web_search tool called generate_content() internally — cost 1 extra
-         quota unit per search on top of the main agent call.
-         Fix: web_search now uses Gemini's native google_search grounding
-         which is bundled into the agent's own call at no extra quota cost.
 """
 
 import logging
