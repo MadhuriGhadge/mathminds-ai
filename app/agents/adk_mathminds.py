@@ -226,6 +226,7 @@ class MathMindsADKAgent:
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
         chat_history: Optional[list] = None,
+        learning_profile: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
 
         token = current_image_ctx.set(image_data)
@@ -250,12 +251,18 @@ class MathMindsADKAgent:
 
             # We bypass the volatile InMemorySessionService and directly inject 
             # MongoDB's persistent chat_history into the prompt for perfect memory.
-            if chat_history:
-                recent_history = chat_history[-10:]
-                history_text = "=== PAST CONVERSATION: ===\n"
-                for msg in recent_history:
-                    r = "User" if msg.get("role") == "user" else "Assistant"
-                    history_text += f"{r}:\n{msg.get('content', '')}\n\n"
+            if chat_history or learning_profile:
+                history_text = ""
+                if learning_profile:
+                    history_text += f"=== USER'S PERSONAL LEARNING PROFILE ===\n{learning_profile}\n[INSTRUCTION: Adopt your teaching style entirely to match this profile!]\n========================================\n\n"
+                    
+                if chat_history:
+                    recent_history = chat_history[-10:]
+                    history_text += "=== PAST CONVERSATION: ===\n"
+                    for msg in recent_history:
+                        r = "User" if msg.get("role") == "user" else "Assistant"
+                        history_text += f"{r}:\n{msg.get('content', '')}\n\n"
+                        
                 history_text += "=== CURRENT REQUEST: ===\n"
                 problem = f"{history_text}{problem}"
 

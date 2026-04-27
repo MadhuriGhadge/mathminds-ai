@@ -270,16 +270,21 @@ class Orchestrator:
             agent_to_use = self.agents.get(mode, self.adk_agent)
             
             chat_history = None
+            learning_profile = None
             if user_id and session_id:
                 try:
                     chat_history = self.db_manager.get_chat_history(user_id, session_id)
+                    user_data = self.db_manager.get_user_profile(user_id)
+                    if user_data:
+                        learning_profile = user_data.get("learning_profile")
                 except Exception as e:
-                    logger.warning(f"Failed to fetch history for memory injection: {e}")
+                    logger.warning(f"Failed to fetch history/profile for memory injection: {e}")
 
             async for event in agent_to_use.solve(
                 problem=query, image_data=image_data,
                 session_id=session_id, user_id=user_id,
                 chat_history=chat_history,
+                learning_profile=learning_profile,
             ):
                 ev_type = event.get("type", "")
                 content = event.get("content", "")
@@ -320,6 +325,10 @@ class Orchestrator:
                     query, result_schema, user_id, session_id, cache_key,
                     request_id=request_id,
                 )
+                if user_id and session_id:
+                    # Let the Assessor run completely invisibly in the background
+                    import asyncio
+                    asyncio.create_task(self._analyze_and_update_profile(user_id, session_id))
 
         except Exception as e:
             logger.error(f"Orchestrator Error: {e}", exc_info=True)
@@ -412,5 +421,39 @@ class Orchestrator:
         # pymongo is sync — run in thread so it doesn't block the event loop
         await asyncio.to_thread(self.db_manager.save_problem, {"content": query}, schema)
 
-    def _make_cache_key(self, query: str) -> str:
         return hashlib.sha256(query.strip().lower().encode()).hexdigest()
+
+    async def _analyze_and_update_profile(self, user_id: str, session_id: str):
+        """Background task to invisibly update the user's distinct learning profile."""
+        try:
+            history = self.db_manager.get_chat_history(user_id, session_id)
+            if not history or len(history) < 2: return
+            
+            transcript = ""
+            # Only analyze the most recent interaction to keep the context summary accurate
+            for m in history[-6:]: 
+                role = "Tutor" if m.get("role") == "model" else "Student"
+                transcript += f"{role}: {m.get('content')}\\n"
+                
+            prompt = (
+                "You are an expert educational profiler for MathMinds. "
+                "Read this snapshot of a math tutoring session and determine the student's mathematical strengths, "
+                "weaknesses, and preferred learning style. "
+                "Output ONLY a succinct, 3-sentence maximum profile "
+                "that can be injected into a future AI Tutor's brain to perfectly personalize future explanations."
+                f"\\n\\nTranscript:\\n{transcript}"
+            )
+            
+            import asyncio
+            client = getattr(self.adk_agent, 'genai_client', None)
+            if client:
+                res = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model='gemini-2.5-flash',
+                    contents=prompt
+                )
+                if res.text:
+                    self.db_manager.update_user_profile(user_id, {"learning_profile": res.text})
+                    logger.info(f"Background Profile Assessor updated learning profile for user {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to run Assessor profile job: {e}")
