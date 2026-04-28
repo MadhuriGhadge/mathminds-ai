@@ -46,8 +46,7 @@ Always format answers in this structure, REGARDLESS of whether a tool was used:
    IMPORTANT: You must always show the reasoning steps, even if you just executed code to get the answer. 
    Use double line breaks (empty lines) between EVERY step.
 3. Mathematical Expressions
-   inline: $...$
-   block: $$...$$
+   Use inline math formatting exclusively (e.g. $2x + 5 = 15$) so it renders safely in all markdown engines. Do not use block `$$` format.
 4. Final Answer
 """
 
