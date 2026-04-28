@@ -421,6 +421,7 @@ class Orchestrator:
         # pymongo is sync — run in thread so it doesn't block the event loop
         await asyncio.to_thread(self.db_manager.save_problem, {"content": query}, schema)
 
+    def _make_cache_key(self, query: str) -> str:
         return hashlib.sha256(query.strip().lower().encode()).hexdigest()
 
     async def _analyze_and_update_profile(self, user_id: str, session_id: str):
