@@ -648,9 +648,12 @@ def chat_interface():
     st.title(active_sess["title"] if active_sess else "Chat")
 
     # ── ALWAYS render history first ────────────────────────────────────────
-    # This runs every pass — so the user question is visible while processing
-    for msg in st.session_state.messages:
-        _render_message(msg)
+    # Wrap history in a fixed-height scrolling container so the page doesn't grow
+    # infinitely, keeping the tabs and sidebar perfectly frozen.
+    chat_container = st.container(height=500, border=False)
+    with chat_container:
+        for msg in st.session_state.messages:
+            _render_message(msg)
 
     # ══════════════════════════════════════════════════════════════════════
     # STATE: PROCESSING
@@ -662,14 +665,15 @@ def chat_interface():
         request_id = str(uuid.uuid4())
 
         # Spinner appears BELOW the rendered history (user question visible above)
-        with st.spinner("Thinking..."):
-            result = api_solve(
-                text       = last.get("content", ""),
-                image      = last.get("image_data"),
-                session_id = active_sid,
-                request_id = request_id,
-                mode       = st.session_state.current_mode,
-            )
+        with chat_container:
+            with st.spinner("Thinking..."):
+                result = api_solve(
+                    text       = last.get("content", ""),
+                    image      = last.get("image_data"),
+                    session_id = active_sid,
+                    request_id = request_id,
+                    mode       = st.session_state.current_mode,
+                )
 
         # Auth expired — logout
         if result.get("error") == "AUTH_EXPIRED":
