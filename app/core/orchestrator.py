@@ -430,6 +430,12 @@ class Orchestrator:
             history = self.db_manager.get_chat_history(user_id, session_id)
             if not history or len(history) < 2: return
             
+            # THROTTLE LIMIT: To prevent hitting the Google Gemini Free Tier quota 
+            # (15 Requests Per Minute), we only run the background profiler every 
+            # 3 complete interactions (6 messages).
+            if len(history) % 6 != 0:
+                return
+            
             transcript = ""
             # Only analyze the most recent interaction to keep the context summary accurate
             for m in history[-6:]: 
