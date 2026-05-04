@@ -708,7 +708,7 @@ def chat_interface():
     # Show input. If user submits, transition to PROCESSING.
     # ══════════════════════════════════════════════════════════════════════
     st.divider()
-    tab_text, tab_draw, tab_upload = st.tabs(["💬 Text", "✏️ Draw", "📤 Upload"])
+    tab_text, tab_draw, tab_upload, tab_camera = st.tabs(["💬 Text", "✏️ Draw", "📤 Upload", "📷 Camera"])
 
     prompt    = None
     image_b64 = None
@@ -750,6 +750,13 @@ def chat_interface():
         if uploaded and st.button("▶ Analyze", type="primary"):
             image_b64 = base64.b64encode(uploaded.getvalue()).decode()
             prompt    = up_q or "Analyze this image."
+
+    with tab_camera:
+        camera_photo = st.camera_input("Take a picture of a math problem")
+        cam_q = st.text_input("Question", placeholder="Analyze this photo...", key="cam_q")
+        if camera_photo and st.button("▶ Analyze Photo", type="primary", key="btn_cam"):
+            image_b64 = base64.b64encode(camera_photo.getvalue()).decode()
+            prompt = cam_q or "Analyze this image."
 
     # ── Transition: IDLE → PROCESSING ─────────────────────────────────────
     # Add user message to state, set flag, rerun.
